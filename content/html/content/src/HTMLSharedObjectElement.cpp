@@ -13,7 +13,6 @@
 #include "nsIPluginDocument.h"
 #include "nsIDOMDocument.h"
 #include "nsThreadUtils.h"
-#include "nsIDOMSVGDocument.h"
 #include "nsIScriptError.h"
 #include "nsIWidget.h"
 #include "nsContentUtils.h"
@@ -33,8 +32,6 @@ HTMLSharedObjectElement::HTMLSharedObjectElement(already_AddRefed<nsINodeInfo> a
 
   // By default we're in the loading state
   AddStatesSilently(NS_EVENT_STATE_LOADING);
-
-  SetIsDOMBinding();
 }
 
 void
@@ -94,7 +91,7 @@ NS_IMPL_RELEASE_INHERITED(HTMLSharedObjectElement, Element)
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(HTMLSharedObjectElement)
   NS_HTML_CONTENT_INTERFACES_AMBIGUOUS(nsGenericHTMLElement,
                                        nsIDOMHTMLAppletElement)
-  NS_INTERFACE_TABLE_INHERITED9(HTMLSharedObjectElement,
+  NS_INTERFACE_TABLE_INHERITED8(HTMLSharedObjectElement,
                                 nsIRequestObserver,
                                 nsIStreamListener,
                                 nsIFrameLoaderOwner,
@@ -102,7 +99,6 @@ NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(HTMLSharedObjectElement)
                                 imgINotificationObserver,
                                 nsIImageLoadingContent,
                                 imgIOnloadBlocker,
-                                nsIInterfaceRequestor,
                                 nsIChannelEventSink)
   NS_INTERFACE_TABLE_TO_MAP_SEGUE
   NS_INTERFACE_MAP_ENTRY_IF_TAG(nsIDOMHTMLAppletElement, applet)
@@ -246,13 +242,28 @@ HTMLSharedObjectElement::ParseAttribute(int32_t aNamespaceID,
 }
 
 static void
-MapAttributesIntoRule(const nsMappedAttributes *aAttributes,
-                      nsRuleData *aData)
+MapAttributesIntoRuleBase(const nsMappedAttributes *aAttributes,
+                          nsRuleData *aData)
 {
   nsGenericHTMLElement::MapImageBorderAttributeInto(aAttributes, aData);
   nsGenericHTMLElement::MapImageMarginAttributeInto(aAttributes, aData);
   nsGenericHTMLElement::MapImageSizeAttributesInto(aAttributes, aData);
   nsGenericHTMLElement::MapImageAlignAttributeInto(aAttributes, aData);
+}
+
+static void
+MapAttributesIntoRuleExceptHidden(const nsMappedAttributes *aAttributes,
+                                  nsRuleData *aData)
+{
+  MapAttributesIntoRuleBase(aAttributes, aData);
+  nsGenericHTMLElement::MapCommonAttributesIntoExceptHidden(aAttributes, aData);
+}
+
+static void
+MapAttributesIntoRule(const nsMappedAttributes *aAttributes,
+                      nsRuleData *aData)
+{
+  MapAttributesIntoRuleBase(aAttributes, aData);
   nsGenericHTMLElement::MapCommonAttributesInto(aAttributes, aData);
 }
 
@@ -273,6 +284,10 @@ HTMLSharedObjectElement::IsAttributeMapped(const nsIAtom *aAttribute) const
 nsMapRuleToAttributesFunc
 HTMLSharedObjectElement::GetAttributeMappingFunction() const
 {
+  if (mNodeInfo->Equals(nsGkAtoms::embed)) {
+    return &MapAttributesIntoRuleExceptHidden;
+  }
+
   return &MapAttributesIntoRule;
 }
 

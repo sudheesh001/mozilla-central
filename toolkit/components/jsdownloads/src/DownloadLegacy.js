@@ -83,6 +83,10 @@ DownloadLegacyTransfer.prototype = {
   onStateChange: function DLT_onStateChange(aWebProgress, aRequest, aStateFlags,
                                             aStatus)
   {
+    if (!Components.isSuccessCode(aStatus)) {
+      this._componentFailed = true;
+    }
+
     // Detect when the last file has been received, or the download failed.
     if ((aStateFlags & Ci.nsIWebProgressListener.STATE_STOP) &&
         (aStateFlags & Ci.nsIWebProgressListener.STATE_IS_NETWORK)) {
@@ -113,6 +117,8 @@ DownloadLegacyTransfer.prototype = {
     // change, but if no network request actually started, it is possible that
     // we only receive a status change with an error status code.
     if (!Components.isSuccessCode(aStatus)) {
+      this._componentFailed = true;
+
       // Wait for the associated Download object to be available.
       this._deferDownload.promise.then(function DLT_OSC_onDownload(aDownload) {
         aDownload.saver.onTransferFinished(aRequest, aStatus);
@@ -155,17 +161,23 @@ DownloadLegacyTransfer.prototype = {
     // wait for it to be available.  This operation may cause the entire
     // download system to initialize before the object is created.
     Downloads.createDownload({
-      source: { uri: aSource, isPrivate: aIsPrivate },
-      target: { file: aTarget.QueryInterface(Ci.nsIFileURL).file },
-      saver: { type: "legacy" },
+      source: { url: aSource.spec, isPrivate: aIsPrivate },
+      target: aTarget.QueryInterface(Ci.nsIFileURL).file,
+      saver: "legacy",
     }).then(function DLT_I_onDownload(aDownload) {
       // Now that the saver is available, hook up the cancellation handler.
-      aDownload.saver.deferCanceled.promise
-                     .then(function () aCancelable.cancel(Cr.NS_ERROR_ABORT))
-                     .then(null, Cu.reportError);
+      aDownload.saver.deferCanceled.promise.then(() => {
+        // Only cancel if the object executing the download is still running.
+        if (!this._componentFailed) {
+          aCancelable.cancel(Cr.NS_ERROR_ABORT);
+        }
+      }).then(null, Cu.reportError);
 
       // Start the download before allowing it to be controlled.
-      aDownload.start();
+      aDownload.start().then(null, function () {
+        // In case the operation failed, ensure we stop downloading data.
+        aDownload.saver.deferCanceled.resolve();
+      });
 
       // Start processing all the other events received through nsITransfer.
       this._deferDownload.resolve(aDownload);
@@ -189,6 +201,13 @@ DownloadLegacyTransfer.prototype = {
    * object associated with this nsITransfer instance, when it is available.
    */
   _deferDownload: null,
+
+  /**
+   * Indicates that the component that executes the download has notified a
+   * failure condition.  In this case, we should never use the component methods
+   * that cancel the download.
+   */
+  _componentFailed: false,
 };
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -23,6 +23,7 @@
 #include "nsIXPCScriptable.h"
 #include "nsIInterfaceInfo.h"
 #include "nsIInterfaceInfoManager.h"
+#include "nsIJSNativeInitializer.h"
 #include "nsIXPCScriptable.h"
 #include "nsIServiceManager.h"
 #include "nsIComponentManager.h"
@@ -84,6 +85,7 @@
 #endif
 
 using namespace mozilla;
+using namespace JS;
 
 class XPCShellDirProvider : public nsIDirectoryServiceProvider2
 {
@@ -137,6 +139,7 @@ FILE *gErrFile = NULL;
 FILE *gInFile = NULL;
 
 int gExitCode = 0;
+bool gIgnoreReportedErrors = false;
 JSBool gQuitting = false;
 static JSBool reportWarnings = true;
 static JSBool compileOnly = false;
@@ -145,7 +148,7 @@ JSPrincipals *gJSPrincipals = nullptr;
 nsAutoString *gWorkingDirectory = nullptr;
 
 static JSBool
-GetLocationProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSMutableHandleValue vp)
+GetLocationProperty(JSContext *cx, HandleObject obj, HandleId id, MutableHandleValue vp)
 {
 #if !defined(XP_WIN) && !defined(XP_UNIX)
     //XXX: your platform should really implement this
@@ -262,97 +265,6 @@ GetLine(JSContext *cx, char *bufp, FILE *file, const char *prompt) {
         strcpy(bufp, line);
     }
     return true;
-}
-
-static void
-my_ErrorReporter(JSContext *cx, const char *message, JSErrorReport *report)
-{
-    int i, j, k, n;
-    char *prefix = NULL, *tmp;
-    const char *ctmp;
-    nsCOMPtr<nsIXPConnect> xpc;
-
-    // Don't report an exception from inner JS frames as the callers may intend
-    // to handle it.
-    if (JS_DescribeScriptedCaller(cx, nullptr, nullptr)) {
-        return;
-    }
-
-    // In some cases cx->fp is null here so use XPConnect to tell us about inner
-    // frames.
-    if ((xpc = do_GetService(nsIXPConnect::GetCID()))) {
-        nsAXPCNativeCallContext *cc = nullptr;
-        xpc->GetCurrentNativeCallContext(&cc);
-        if (cc) {
-            nsAXPCNativeCallContext *prev = cc;
-            while (NS_SUCCEEDED(prev->GetPreviousCallContext(&prev)) && prev) {
-                uint16_t lang;
-                if (NS_SUCCEEDED(prev->GetLanguage(&lang)) &&
-                    lang == nsAXPCNativeCallContext::LANG_JS) {
-                    return;
-                }
-            }
-        }
-    }
-
-    if (!report) {
-        fprintf(gErrFile, "%s\n", message);
-        return;
-    }
-
-    /* Conditionally ignore reported warnings. */
-    if (JSREPORT_IS_WARNING(report->flags) && !reportWarnings)
-        return;
-
-    if (report->filename)
-        prefix = JS_smprintf("%s:", report->filename);
-    if (report->lineno) {
-        tmp = prefix;
-        prefix = JS_smprintf("%s%u: ", tmp ? tmp : "", report->lineno);
-        JS_free(cx, tmp);
-    }
-    if (JSREPORT_IS_WARNING(report->flags)) {
-        tmp = prefix;
-        prefix = JS_smprintf("%s%swarning: ",
-                             tmp ? tmp : "",
-                             JSREPORT_IS_STRICT(report->flags) ? "strict " : "");
-        JS_free(cx, tmp);
-    }
-
-    /* embedded newlines -- argh! */
-    while ((ctmp = strchr(message, '\n')) != 0) {
-        ctmp++;
-        if (prefix) fputs(prefix, gErrFile);
-        fwrite(message, 1, ctmp - message, gErrFile);
-        message = ctmp;
-    }
-    /* If there were no filename or lineno, the prefix might be empty */
-    if (prefix)
-        fputs(prefix, gErrFile);
-    fputs(message, gErrFile);
-
-    if (!report->linebuf) {
-        fputc('\n', gErrFile);
-        goto out;
-    }
-
-    fprintf(gErrFile, ":\n%s%s\n%s", prefix, report->linebuf, prefix);
-    n = report->tokenptr - report->linebuf;
-    for (i = j = 0; i < n; i++) {
-        if (report->linebuf[i] == '\t') {
-            for (k = (j + 8) & ~7; j < k; j++) {
-                fputc('.', gErrFile);
-            }
-            continue;
-        }
-        fputc('.', gErrFile);
-        j++;
-    }
-    fputs("^\n", gErrFile);
- out:
-    if (!JSREPORT_IS_WARNING(report->flags))
-        gExitCode = EXITCODE_RUNTIME_ERROR;
-    JS_free(cx, prefix);
 }
 
 static JSBool
@@ -489,10 +401,11 @@ Load(JSContext *cx, unsigned argc, jsval *vp)
 static JSBool
 Version(JSContext *cx, unsigned argc, jsval *vp)
 {
+    JSVersion origVersion = JS_GetVersion(cx);
+    JS_SET_RVAL(cx, vp, INT_TO_JSVAL(origVersion));
     if (argc > 0 && JSVAL_IS_INT(JS_ARGV(cx, vp)[0]))
-        JS_SET_RVAL(cx, vp, INT_TO_JSVAL(JS_SetVersion(cx, JSVersion(JSVAL_TO_INT(JS_ARGV(cx, vp)[0])))));
-    else
-        JS_SET_RVAL(cx, vp, INT_TO_JSVAL(JS_GetVersion(cx)));
+        JS_SetVersionForCompartment(js::GetContextCompartment(cx),
+                                    JSVersion(JSVAL_TO_INT(JS_ARGV(cx, vp)[0])));
     return true;
 }
 
@@ -513,6 +426,21 @@ Quit(JSContext *cx, unsigned argc, jsval *vp)
     gQuitting = true;
 //    exit(0);
     return false;
+}
+
+// Provide script a way to disable the xpcshell error reporter, preventing
+// reported errors from being logged to the console and also from affecting the
+// exit code returned by the xpcshell binary.
+static JSBool
+IgnoreReportedErrors(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (argc != 1 || !args[0].isBoolean()) {
+        JS_ReportError(cx, "Bad arguments");
+        return false;
+    }
+    gIgnoreReportedErrors = args[0].toBoolean();
+    return true;
 }
 
 static JSBool
@@ -677,19 +605,6 @@ SendCommand(JSContext* cx,
     return true;
 }
 
-static JSBool
-GetChildGlobalObject(JSContext* cx,
-                     unsigned,
-                     jsval* vp)
-{
-    JS::Rooted<JSObject*> global(cx);
-    if (XRE_GetChildGlobalObject(cx, global.address())) {
-        JS_SET_RVAL(cx, vp, OBJECT_TO_JSVAL(global));
-        return true;
-    }
-    return false;
-}
-
 /*
  * JSContext option name to flag map. The option names are in alphabetical
  * order for better reporting.
@@ -819,11 +734,152 @@ Btoa(JSContext *cx, unsigned argc, jsval *vp)
   return xpc::Base64Encode(cx, JS_ARGV(cx, vp)[0], &JS_RVAL(cx, vp));
 }
 
+static JSBool
+Blob(JSContext *cx, unsigned argc, jsval *vp)
+{
+  JS::CallArgs args = CallArgsFromVp(argc, vp);
+
+  nsCOMPtr<nsISupports> native =
+    do_CreateInstance("@mozilla.org/dom/multipart-blob;1");
+  if (!native) {
+    JS_ReportError(cx, "Could not create native object!");
+    return false;
+  }
+
+  nsCOMPtr<nsIJSNativeInitializer> initializer = do_QueryInterface(native);
+  NS_ASSERTION(initializer, "what?");
+
+  nsresult rv = initializer->Initialize(nullptr, cx, nullptr, args);
+  if (NS_FAILED(rv)) {
+    JS_ReportError(cx, "Could not initialize native object!");
+    return false;
+  }
+
+  nsCOMPtr<nsIXPConnect> xpc = do_GetService(kXPConnectServiceContractID, &rv);
+  if (NS_FAILED(rv)) {
+    JS_ReportError(cx, "Could not get XPConnent service!");
+    return false;
+  }
+
+  JSObject* global = JS_GetGlobalForScopeChain(cx);
+  rv = xpc->WrapNativeToJSVal(cx, global, native, nullptr,
+                              &NS_GET_IID(nsISupports), true,
+                              args.rval().address(), nullptr);
+  if (NS_FAILED(rv)) {
+    JS_ReportError(cx, "Could not wrap native object!");
+    return false;
+  }
+
+  return true;
+}
+
+static JSBool
+File(JSContext *cx, unsigned argc, jsval *vp)
+{
+  JS::CallArgs args = CallArgsFromVp(argc, vp);
+
+  nsCOMPtr<nsISupports> native =
+    do_CreateInstance("@mozilla.org/dom/multipart-file;1");
+  if (!native) {
+    JS_ReportError(cx, "Could not create native object!");
+    return false;
+  }
+
+  nsCOMPtr<nsIJSNativeInitializer> initializer = do_QueryInterface(native);
+  NS_ASSERTION(initializer, "what?");
+
+  nsresult rv = initializer->Initialize(nullptr, cx, nullptr, args);
+  if (NS_FAILED(rv)) {
+    JS_ReportError(cx, "Could not initialize native object!");
+    return false;
+  }
+
+  nsCOMPtr<nsIXPConnect> xpc = do_GetService(kXPConnectServiceContractID, &rv);
+  if (NS_FAILED(rv)) {
+    JS_ReportError(cx, "Could not get XPConnent service!");
+    return false;
+  }
+
+  JSObject* global = JS_GetGlobalForScopeChain(cx);
+  rv = xpc->WrapNativeToJSVal(cx, global, native, nullptr,
+                              &NS_GET_IID(nsISupports), true,
+                              args.rval().address(), nullptr);
+  if (NS_FAILED(rv)) {
+    JS_ReportError(cx, "Could not wrap native object!");
+    return false;
+  }
+
+  return true;
+}
+
+Value sScriptedOperationCallback = UndefinedValue();
+
+static JSBool
+XPCShellOperationCallback(JSContext *cx)
+{
+    // If no operation callback was set by script, no-op.
+    if (sScriptedOperationCallback.isUndefined())
+        return true;
+
+    JSAutoCompartment ac(cx, &sScriptedOperationCallback.toObject());
+    RootedValue rv(cx);
+    if (!JS_CallFunctionValue(cx, nullptr, sScriptedOperationCallback,
+                              0, nullptr, rv.address()) || !rv.isBoolean())
+    {
+        NS_WARNING("Scripted operation callback failed! Terminating script.");
+        JS_ClearPendingException(cx);
+        return false;
+    }
+
+    return rv.toBoolean();
+}
+
+static JSBool
+SetOperationCallback(JSContext *cx, unsigned argc, jsval *vp)
+{
+    // Sanity-check args.
+    JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+    if (args.length() != 1) {
+        JS_ReportError(cx, "Wrong number of arguments");
+        return false;
+    }
+
+    // Allow callers to remove the operation callback by passing undefined.
+    if (args[0].isUndefined()) {
+        sScriptedOperationCallback = UndefinedValue();
+        return true;
+    }
+
+    // Otherwise, we should have a callable object.
+    if (!args[0].isObject() || !JS_ObjectIsCallable(cx, &args[0].toObject())) {
+        JS_ReportError(cx, "Argument must be callable");
+        return false;
+    }
+
+    sScriptedOperationCallback = args[0];
+
+    return true;
+}
+
+static JSBool
+SimulateActivityCallback(JSContext *cx, unsigned argc, jsval *vp)
+{
+    // Sanity-check args.
+    JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+    if (args.length() != 1 || !args[0].isBoolean()) {
+        JS_ReportError(cx, "Wrong number of arguments");
+        return false;
+    }
+    xpc::SimulateActivityCallback(args[0].toBoolean());
+    return true;
+}
+
 static const JSFunctionSpec glob_functions[] = {
     JS_FS("print",           Print,          0,0),
     JS_FS("readline",        ReadLine,       1,0),
     JS_FS("load",            Load,           1,0),
     JS_FS("quit",            Quit,           0,0),
+    JS_FS("ignoreReportedErrors", IgnoreReportedErrors, 1,0),
     JS_FS("version",         Version,        1,0),
     JS_FS("build",           BuildDate,      0,0),
     JS_FS("dumpXPC",         DumpXPC,        1,0),
@@ -838,9 +894,12 @@ static const JSFunctionSpec glob_functions[] = {
     JS_FS("dumpHeap",        DumpHeap,       5,0),
 #endif
     JS_FS("sendCommand",     SendCommand,    1,0),
-    JS_FS("getChildGlobalObject", GetChildGlobalObject, 0,0),
     JS_FS("atob",            Atob,           1,0),
     JS_FS("btoa",            Btoa,           1,0),
+    JS_FS("Blob",            Blob,           2,JSFUN_CONSTRUCTOR),
+    JS_FS("File",            File,           2,JSFUN_CONSTRUCTOR),
+    JS_FS("setOperationCallback", SetOperationCallback, 1,0),
+    JS_FS("simulateActivityCallback", SimulateActivityCallback, 1,0),
     JS_FS_END
 };
 
@@ -851,7 +910,7 @@ JSClass global_class = {
 };
 
 static JSBool
-env_setProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict, JSMutableHandleValue vp)
+env_setProperty(JSContext *cx, HandleObject obj, HandleId id, JSBool strict, MutableHandleValue vp)
 {
 /* XXX porting may be easy, but these don't seem to supply setenv by default */
 #if !defined XP_OS2 && !defined SOLARIS
@@ -905,7 +964,7 @@ env_setProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict,
 }
 
 static JSBool
-env_enumerate(JSContext *cx, JSHandleObject obj)
+env_enumerate(JSContext *cx, HandleObject obj)
 {
     static JSBool reflected;
     char **evp, *name, *value;
@@ -937,7 +996,7 @@ env_enumerate(JSContext *cx, JSHandleObject obj)
 }
 
 static JSBool
-env_resolve(JSContext *cx, JSHandleObject obj, JSHandleId id, unsigned flags,
+env_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
             JS::MutableHandleObject objp)
 {
     JSString *idstr, *valstr;
@@ -1236,7 +1295,8 @@ ProcessArgs(JSContext *cx, JS::Handle<JSObject*> obj, char **argv, int argc, XPC
             if (++i == argc) {
                 return usage();
             }
-            JS_SetVersion(cx, JSVersion(atoi(argv[i])));
+            JS_SetVersionForCompartment(js::GetContextCompartment(cx),
+                                        JSVersion(atoi(argv[i])));
             break;
         case 'W':
             reportWarnings = false;
@@ -1308,6 +1368,7 @@ ProcessArgs(JSContext *cx, JS::Handle<JSObject*> obj, char **argv, int argc, XPC
 
     if (filename || isInteractive)
         Process(cx, obj, filename, forceTTY);
+
     return gExitCode;
 }
 
@@ -1392,6 +1453,19 @@ nsXPCFunctionThisTranslator::TranslateThis(nsISupports *aInitialThis,
 // ContextCallback calls are chained
 static JSContextCallback gOldJSContextCallback;
 
+void
+XPCShellErrorReporter(JSContext *cx, const char *message, JSErrorReport *rep)
+{
+    if (gIgnoreReportedErrors)
+        return;
+
+    if (!JSREPORT_IS_WARNING(rep->flags))
+        gExitCode = EXITCODE_RUNTIME_ERROR;
+
+    // Delegate to the system error reporter for heavy lifting.
+    xpc::SystemErrorReporterExternal(cx, message, rep);
+}
+
 static JSBool
 ContextCallback(JSContext *cx, unsigned contextOp)
 {
@@ -1399,8 +1473,8 @@ ContextCallback(JSContext *cx, unsigned contextOp)
         return false;
 
     if (contextOp == JSCONTEXT_NEW) {
-        JS_SetErrorReporter(cx, my_ErrorReporter);
-        JS_SetVersion(cx, JSVERSION_LATEST);
+        JS_SetErrorReporter(cx, XPCShellErrorReporter);
+        JS_SetOperationCallback(cx, XPCShellOperationCallback);
     }
     return true;
 }
@@ -1634,12 +1708,15 @@ main(int argc, char **argv, char **envp)
             return 1;
         }
 
+        JS::CompartmentOptions options;
+        options.setZone(JS::SystemZone)
+               .setVersion(JSVERSION_LATEST);
         nsCOMPtr<nsIXPConnectJSObjectHolder> holder;
         rv = xpc->InitClassesWithNewWrappedGlobal(cx,
                                                   static_cast<nsIGlobalObject *>(backstagePass),
                                                   systemprincipal,
                                                   0,
-                                                  JS::SystemZone,
+                                                  options,
                                                   getter_AddRefs(holder));
         if (NS_FAILED(rv))
             return 1;
@@ -1681,7 +1758,9 @@ main(int argc, char **argv, char **envp)
             JS_DefineProperty(cx, glob, "__LOCATION__", JSVAL_VOID,
                               GetLocationProperty, NULL, 0);
 
+            JS_AddValueRoot(cx, &sScriptedOperationCallback);
             result = ProcessArgs(cx, glob, argv, argc, &dirprovider);
+            JS_RemoveValueRoot(cx, &sScriptedOperationCallback);
 
             JS_DropPrincipals(rt, gJSPrincipals);
             JS_SetAllNonReservedSlotsToUndefined(cx, glob);

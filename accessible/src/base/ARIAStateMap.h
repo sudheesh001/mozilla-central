@@ -42,8 +42,10 @@ enum EStateRule
   eARIAReadonlyOrEditableIfDefined,
   eARIARequired,
   eARIASelectable,
+  eARIASelectableIfDefined,
   eReadonlyUntilEditable,
-  eIndeterminateIfNoValue
+  eIndeterminateIfNoValue,
+  eFocusableUntilDisabled
 };
 
 /**

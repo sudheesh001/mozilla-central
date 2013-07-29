@@ -43,6 +43,8 @@ parent:
   sync Pause();
   sync Resume();
 
+  async NotifyChildCreated(uint64_t id);
+
   // Make a snapshot of the content that would have been drawn to our
   // render target at the time this message is received.  If the size
   // or format of |inSnapshot| doesn't match our render target,
@@ -52,6 +54,10 @@ parent:
   // and so forth being interpolated.  That's what we want to happen.
   sync MakeSnapshot(SurfaceDescriptor inSnapshot)
     returns (SurfaceDescriptor outSnapshot);
+
+  // Make sure any pending composites are started immediately and
+  // block until they are completed.
+  sync FlushRendering();
 
   sync PLayerTransaction(LayersBackend layersBackendHint, uint64_t id)
     returns (TextureFactoryIdentifier textureFactoryIdentifier);

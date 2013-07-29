@@ -1215,6 +1215,19 @@ nsDisplayImage::Paint(nsDisplayListBuilder* aBuilder,
     PaintImage(*aCtx, ToReferenceFrame(), mVisibleRect, mImage, flags);
 }
 
+void
+nsDisplayImage::ComputeInvalidationRegion(nsDisplayListBuilder* aBuilder,
+                                          const nsDisplayItemGeometry* aGeometry,
+                                          nsRegion* aInvalidRegion)
+{
+  if (aBuilder->ShouldSyncDecodeImages() && mImage && !mImage->IsDecoded()) {
+    bool snap;
+    aInvalidRegion->Or(*aInvalidRegion, GetBounds(aBuilder, &snap));
+  }
+
+  nsDisplayImageContainer::ComputeInvalidationRegion(aBuilder, aGeometry, aInvalidRegion);
+}
+
 already_AddRefed<ImageContainer>
 nsDisplayImage::GetContainer(LayerManager* aManager,
                              nsDisplayListBuilder* aBuilder)
@@ -1758,7 +1771,7 @@ nsImageFrame::List(FILE* out, int32_t aIndent, uint32_t aFlags) const
 #endif
 
 int
-nsImageFrame::GetSkipSides() const
+nsImageFrame::GetSkipSides(const nsHTMLReflowState* aReflowState) const
 {
   int skip = 0;
   if (nullptr != GetPrevInFlow()) {

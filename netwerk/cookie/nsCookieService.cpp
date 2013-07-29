@@ -559,7 +559,7 @@ public:
   nsRefPtr<DBState> mDBState;
   NS_DECL_ISUPPORTS
 
-  NS_IMETHOD Complete()
+  NS_IMETHOD Complete(nsresult, nsISupports*)
   {
     gCookieService->HandleDBClosed(mDBState);
     return NS_OK;
@@ -745,8 +745,8 @@ nsCookieService::InitDBStates()
     // Database may be corrupt. Synchronously close the connection, clean up the
     // default DBState, and try again.
     COOKIE_LOGSTRING(PR_LOG_WARNING, ("InitDBStates(): retrying TryInitDB()"));
-
-    CloseDefaultDBConnection();
+    CleanupCachedStatements();
+    CleanupDefaultDBConnection();
     result = TryInitDB(true);
     if (result == RESULT_RETRY) {
       // We're done. Change the code to failure so we clean up below.
@@ -760,7 +760,8 @@ nsCookieService::InitDBStates()
 
     // Connection failure is unrecoverable. Clean up our connection. We can run
     // fine without persistent storage -- e.g. if there's no profile.
-    CloseDefaultDBConnection();
+    CleanupCachedStatements();
+    CleanupDefaultDBConnection();
   }
 }
 
@@ -1243,6 +1244,9 @@ nsCookieService::CloseDBStates()
   if (!mDefaultDBState)
     return;
 
+  // Cleanup cached statements before we can close anything.
+  CleanupCachedStatements();
+
   if (mDefaultDBState->dbConn) {
     // Cancel any pending read. No further results will be received by our
     // read listener.
@@ -1254,21 +1258,31 @@ nsCookieService::CloseDBStates()
     mDefaultDBState->dbConn->AsyncClose(mDefaultDBState->closeListener);
   }
 
-  CloseDefaultDBConnection();
+  CleanupDefaultDBConnection();
 
   mDefaultDBState = NULL;
 }
 
-// Close the default connection by nulling out statements, listeners, and the
-// connection itself. This will not cancel a pending read or asynchronously
-// close the connection -- these must be done beforehand if necessary.
+// Null out the statements.
+// This must be done before closing the connection.
 void
-nsCookieService::CloseDefaultDBConnection()
+nsCookieService::CleanupCachedStatements()
 {
-  // Destroy our statements before we close the db.
-  mDefaultDBState->stmtInsert = NULL;
-  mDefaultDBState->stmtDelete = NULL;
-  mDefaultDBState->stmtUpdate = NULL;
+  mDefaultDBState->stmtInsert = nullptr;
+  mDefaultDBState->stmtDelete = nullptr;
+  mDefaultDBState->stmtUpdate = nullptr;
+}
+
+// Null out the listeners, and the database connection itself. This
+// will not null out the statements, cancel a pending read or
+// asynchronously close the connection -- these must be done
+// beforehand if necessary.
+void
+nsCookieService::CleanupDefaultDBConnection()
+{
+  MOZ_ASSERT(!mDefaultDBState->stmtInsert, "stmtInsert has been cleaned up");
+  MOZ_ASSERT(!mDefaultDBState->stmtDelete, "stmtDelete has been cleaned up");
+  MOZ_ASSERT(!mDefaultDBState->stmtUpdate, "stmtUpdate has been cleaned up");
 
   // Null out the database connections. If 'dbConn' has not been used for any
   // asynchronous operations yet, this will synchronously close it; otherwise,
@@ -1354,8 +1368,9 @@ nsCookieService::HandleCorruptDB(DBState* aDBState)
       mDefaultDBState->syncConn = nullptr;
     }
 
+    CleanupCachedStatements();
     mDefaultDBState->dbConn->AsyncClose(mDefaultDBState->closeListener);
-    CloseDefaultDBConnection();
+    CleanupDefaultDBConnection();
     break;
   }
   case DBState::CLOSING_FOR_REBUILD: {
@@ -1366,10 +1381,11 @@ nsCookieService::HandleCorruptDB(DBState* aDBState)
   case DBState::REBUILDING: {
     // We had an error while rebuilding the DB. Game over. Close the database
     // and let the close handler do nothing; then we'll move it out of the way.
+    CleanupCachedStatements();
     if (mDefaultDBState->dbConn) {
       mDefaultDBState->dbConn->AsyncClose(mDefaultDBState->closeListener);
     }
-    CloseDefaultDBConnection();
+    CleanupDefaultDBConnection();
     break;
   }
   }
@@ -1425,7 +1441,8 @@ nsCookieService::RebuildCorruptDB(DBState* aDBState)
     // closure.
     COOKIE_LOGSTRING(PR_LOG_WARNING,
       ("RebuildCorruptDB(): TryInitDB() failed with result %u", result));
-    CloseDefaultDBConnection();
+    CleanupCachedStatements();
+    CleanupDefaultDBConnection();
     mDefaultDBState->corruptFlag = DBState::OK;
     mObserverService->NotifyObservers(nullptr, "cookie-db-closed", nullptr);
     return;
@@ -1455,7 +1472,7 @@ nsCookieService::RebuildCorruptDB(DBState* aDBState)
   NS_ASSERT_SUCCESS(rv);
   nsCOMPtr<mozIStoragePendingStatement> handle;
   rv = stmt->ExecuteAsync(aDBState->insertListener, getter_AddRefs(handle));
-  NS_ASSERT_SUCCESS(rv);    
+  NS_ASSERT_SUCCESS(rv);
 }
 
 nsCookieService::~nsCookieService()
@@ -1646,13 +1663,23 @@ nsCookieService::SetCookieStringInternal(nsIURI             *aHostURI,
   // check default prefs
   CookieStatus cookieStatus = CheckPrefs(aHostURI, aIsForeign, requireHostMatch,
                                          aCookieHeader.get());
-  // fire a notification if cookie was rejected (but not if there was an error)
+  // fire a notification if third party or if cookie was rejected
+  // (but not if there was an error)
   switch (cookieStatus) {
   case STATUS_REJECTED:
     NotifyRejected(aHostURI);
-    return;
+    if (aIsForeign) {
+      NotifyThirdParty(aHostURI, false, aChannel);
+    }
+    return; // Stop here
   case STATUS_REJECTED_WITH_ERROR:
     return;
+  case STATUS_ACCEPTED: // Fallthrough
+  case STATUS_ACCEPT_SESSION:
+    if (aIsForeign) {
+      NotifyThirdParty(aHostURI, true, aChannel);
+    }
+    break;
   default:
     break;
   }
@@ -1685,8 +1712,66 @@ nsCookieService::SetCookieStringInternal(nsIURI             *aHostURI,
 void
 nsCookieService::NotifyRejected(nsIURI *aHostURI)
 {
-  if (mObserverService)
+  if (mObserverService) {
     mObserverService->NotifyObservers(aHostURI, "cookie-rejected", nullptr);
+  }
+}
+
+// notify observers that a third-party cookie was accepted/rejected
+// if the cookie issuer is unknown, it defaults to "?"
+void
+nsCookieService::NotifyThirdParty(nsIURI *aHostURI, bool aIsAccepted, nsIChannel *aChannel)
+{
+  if (!mObserverService) {
+    return;
+  }
+
+  const char* topic;
+
+  if (mDBState != mPrivateDBState) {
+    // Regular (non-private) browsing
+    if (aIsAccepted) {
+      topic = "third-party-cookie-accepted";
+    } else {
+      topic = "third-party-cookie-rejected";
+    }
+  } else {
+    // Private browsing
+    if (aIsAccepted) {
+      topic = "private-third-party-cookie-accepted";
+    } else {
+      topic = "private-third-party-cookie-rejected";
+    }
+  }
+
+  do {
+    // Attempt to find the host of aChannel.
+    if (!aChannel) {
+      break;
+    }
+    nsCOMPtr<nsIURI> channelURI;
+    nsresult rv = aChannel->GetURI(getter_AddRefs(channelURI));
+    if (NS_FAILED(rv)) {
+      break;
+    }
+
+    nsAutoCString referringHost;
+    rv = channelURI->GetHost(referringHost);
+    if (NS_FAILED(rv)) {
+      break;
+    }
+
+    nsAutoString referringHostUTF16 = NS_ConvertUTF8toUTF16(referringHost);
+    mObserverService->NotifyObservers(aHostURI,
+                                      topic,
+                                      referringHostUTF16.get());
+    return;
+  } while (0);
+
+  // This can fail for a number of reasons, in which kind we fallback to "?"
+  mObserverService->NotifyObservers(aHostURI,
+                                    topic,
+                                    NS_LITERAL_STRING("?").get());
 }
 
 // notify observers that the cookie list changed. there are five possible

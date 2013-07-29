@@ -17,8 +17,8 @@ sys.path.insert(0, os.path.abspath(os.path.realpath(os.path.dirname(sys.argv[0])
 from automation import Automation
 from remoteautomation import RemoteAutomation, fennecLogcatFilters
 from runtests import Mochitest
-from runtests import MochitestOptions
 from runtests import MochitestServer
+from mochitest_options import MochitestOptions
 
 import devicemanager
 import droid
@@ -26,9 +26,9 @@ import manifestparser
 
 class RemoteOptions(MochitestOptions):
 
-    def __init__(self, automation, scriptdir, **kwargs):
+    def __init__(self, automation, **kwargs):
         defaults = {}
-        MochitestOptions.__init__(self, automation, scriptdir)
+        MochitestOptions.__init__(self, automation)
 
         self.add_option("--remote-app-path", action="store",
                     type = "string", dest = "remoteAppPath",
@@ -302,6 +302,11 @@ class MochiRemote(Mochitest):
         if options.utilityPath == None:
             print "ERROR: unable to find utility path for %s, please specify with --utility-path" % (os.name)
             sys.exit(1)
+        # httpd-path is specified by standard makefile targets and may be specified
+        # on the command line to select a particular version of httpd.js. If not
+        # specified, try to select the one from hostutils.zip, as required in bug 882932.
+        if not options.httpdPath:
+            options.httpdPath = os.path.join(options.utilityPath, "components")
 
         xpcshell_path = os.path.join(options.utilityPath, xpcshell)
         if localAutomation.elf_arm(xpcshell_path):
@@ -468,11 +473,13 @@ class MochiRemote(Mochitest):
             # pullFile will fail -- continue silently.
             pass
 
-    def printDeviceInfo(self):
+    def printDeviceInfo(self, printLogcat=False):
         try:
-            logcat = self._dm.getLogcat(filterOutRegexps=fennecLogcatFilters)
-            print ''.join(logcat)
-            print self._dm.getInfo()
+            if printLogcat:
+                logcat = self._dm.getLogcat(filterOutRegexps=fennecLogcatFilters)
+                print ''.join(logcat)
+            print "Device info: %s" % self._dm.getInfo()
+            print "Test root: %s" % self._dm.getDeviceRoot()
         except devicemanager.DMError:
             print "WARNING: Error getting device information"
 
@@ -512,9 +519,8 @@ class MochiRemote(Mochitest):
 
         
 def main():
-    scriptdir = os.path.abspath(os.path.realpath(os.path.dirname(__file__)))
     auto = RemoteAutomation(None, "fennec")
-    parser = RemoteOptions(auto, scriptdir)
+    parser = RemoteOptions(auto)
     options, args = parser.parse_args()
 
     if (options.dm_trans == "adb"):
@@ -547,7 +553,7 @@ def main():
     auto.setRemoteLog(options.remoteLogFile)
     auto.setServerInfo(options.webServer, options.httpPort, options.sslPort)
 
-    print dm.getInfo()
+    mochitest.printDeviceInfo()
 
     procName = options.app.split('/')[-1]
     if (dm.processExist(procName)):
@@ -583,7 +589,7 @@ def main():
         options.extraPrefs.append('robocop.logfile="%s/robocop.log"' % deviceRoot)
         options.extraPrefs.append('browser.search.suggest.enabled=true')
         options.extraPrefs.append('browser.search.suggest.prompted=true')
-        options.extraPrefs.append('browser.viewport.scaleRatio=100')
+        options.extraPrefs.append('layout.css.devPixelsPerPx="1.0"')
         options.extraPrefs.append('browser.chrome.dynamictoolbar=false')
 
         if (options.dm_trans == 'adb' and options.robocopApk):
@@ -633,7 +639,7 @@ def main():
                     print "ERROR: runTests() exited with code %s" % result
                 log_result = mochitest.addLogData()
                 if result != 0 or log_result != 0:
-                    mochitest.printDeviceInfo()
+                    mochitest.printDeviceInfo(printLogcat=True)
                     mochitest.printScreenshot()
                 # Ensure earlier failures aren't overwritten by success on this run
                 if retVal is None or retVal == 0:
@@ -686,7 +692,7 @@ def main():
                 pass
             retVal = 1
 
-    mochitest.printDeviceInfo()
+    mochitest.printDeviceInfo(printLogcat=True)
 
     sys.exit(retVal)
 

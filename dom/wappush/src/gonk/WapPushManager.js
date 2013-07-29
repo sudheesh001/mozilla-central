@@ -28,6 +28,16 @@ XPCOMUtils.defineLazyGetter(this, "SL", function () {
   return SL;
 });
 
+XPCOMUtils.defineLazyGetter(this, "CP", function () {
+  let CP = {};
+  Cu.import("resource://gre/modules/CpPduHelper.jsm", CP);
+  return CP;
+});
+
+XPCOMUtils.defineLazyServiceGetter(this, "gSystemMessenger",
+                                   "@mozilla.org/system-message-internal;1",
+                                   "nsISystemMessagesInternal");
+
 /**
  * Helpers for WAP PDU processing.
  */
@@ -80,23 +90,29 @@ this.WapPushManager = {
     * @see http://technical.openmobilealliance.org/tech/omna/omna-wsp-content-type.aspx
     */
     let contentType = options.headers["content-type"].media;
-    let msg = { contentType: contentType };
+    let msg;
 
     if (contentType === "text/vnd.wap.si" ||
         contentType === "application/vnd.wap.sic") {
-      SI.PduHelper.parse(data, contentType, msg);
+      msg = SI.PduHelper.parse(data, contentType);
     } else if (contentType === "text/vnd.wap.sl" ||
                contentType === "application/vnd.wap.slc") {
-      SL.PduHelper.parse(data, contentType, msg);
+      msg = SL.PduHelper.parse(data, contentType);
     } else if (contentType === "text/vnd.wap.connectivity-xml" ||
                contentType === "application/vnd.wap.connectivity-wbxml") {
-      // TODO: Bug 869291 - Support Receiving WAP-Push-CP
+      msg = CP.PduHelper.parse(data, contentType);
     } else {
       // Unsupported type, provide raw data.
-      msg.content = data.array;
+      msg = {
+        contentType: contentType,
+        content: data.array
+      };
     }
 
-    // TODO: Bug 853782 - Notify receiving of WAP Push messages
+    gSystemMessenger.broadcastMessage("wappush-received", {
+      contentType:    msg.contentType,
+      content:        msg.content
+    });
   },
 
   /**

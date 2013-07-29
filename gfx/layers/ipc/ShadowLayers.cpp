@@ -160,16 +160,14 @@ struct AutoTxnEnd {
 void
 CompositableForwarder::IdentifyTextureHost(const TextureFactoryIdentifier& aIdentifier)
 {
-  mMaxTextureSize = aIdentifier.mMaxTextureSize;
-  mCompositorBackend = aIdentifier.mParentBackend;
-  mSupportsTextureBlitting = aIdentifier.mSupportsTextureBlitting;
-  mSupportsPartialUploads = aIdentifier.mSupportsPartialUploads;
+  mTextureFactoryIdentifier = aIdentifier;
 }
 
 ShadowLayerForwarder::ShadowLayerForwarder()
- : mShadowManager(NULL)
+ : mShadowManager(nullptr)
  , mIsFirstPaint(false)
  , mDrawColoredBorders(false)
+ , mWindowOverlayChanged(false)
 {
   mTxn = new Transaction();
 }
@@ -201,7 +199,7 @@ template<typename OpCreateT>
 static void
 CreatedLayer(Transaction* aTxn, ShadowableLayer* aLayer)
 {
-  aTxn->AddEdit(OpCreateT(NULL, Shadow(aLayer)));
+  aTxn->AddEdit(OpCreateT(nullptr, Shadow(aLayer)));
 }
 
 void
@@ -250,7 +248,7 @@ mTxn->AddMutant(aMutant);
 void
 ShadowLayerForwarder::SetRoot(ShadowableLayer* aRoot)
 {
-  mTxn->AddEdit(OpSetRoot(NULL, Shadow(aRoot)));
+  mTxn->AddEdit(OpSetRoot(nullptr, Shadow(aRoot)));
 }
 void
 ShadowLayerForwarder::InsertAfter(ShadowableLayer* aContainer,
@@ -258,12 +256,12 @@ ShadowLayerForwarder::InsertAfter(ShadowableLayer* aContainer,
                                   ShadowableLayer* aAfter)
 {
   if (aAfter)
-    mTxn->AddEdit(OpInsertAfter(NULL, Shadow(aContainer),
-                                NULL, Shadow(aChild),
-                                NULL, Shadow(aAfter)));
+    mTxn->AddEdit(OpInsertAfter(nullptr, Shadow(aContainer),
+                                nullptr, Shadow(aChild),
+                                nullptr, Shadow(aAfter)));
   else
-    mTxn->AddEdit(OpAppendChild(NULL, Shadow(aContainer),
-                                NULL, Shadow(aChild)));
+    mTxn->AddEdit(OpAppendChild(nullptr, Shadow(aContainer),
+                                nullptr, Shadow(aChild)));
 }
 void
 ShadowLayerForwarder::RemoveChild(ShadowableLayer* aContainer,
@@ -272,8 +270,8 @@ ShadowLayerForwarder::RemoveChild(ShadowableLayer* aContainer,
   MOZ_LAYERS_LOG(("[LayersForwarder] OpRemoveChild container=%p child=%p\n",
                   aContainer->AsLayer(), aChild->AsLayer()));
 
-  mTxn->AddEdit(OpRemoveChild(NULL, Shadow(aContainer),
-                              NULL, Shadow(aChild)));
+  mTxn->AddEdit(OpRemoveChild(nullptr, Shadow(aContainer),
+                              nullptr, Shadow(aChild)));
 }
 void
 ShadowLayerForwarder::RepositionChild(ShadowableLayer* aContainer,
@@ -283,14 +281,14 @@ ShadowLayerForwarder::RepositionChild(ShadowableLayer* aContainer,
   if (aAfter) {
     MOZ_LAYERS_LOG(("[LayersForwarder] OpRepositionChild container=%p child=%p after=%p",
                    aContainer->AsLayer(), aChild->AsLayer(), aAfter->AsLayer()));
-    mTxn->AddEdit(OpRepositionChild(NULL, Shadow(aContainer),
-                                    NULL, Shadow(aChild),
-                                    NULL, Shadow(aAfter)));
+    mTxn->AddEdit(OpRepositionChild(nullptr, Shadow(aContainer),
+                                    nullptr, Shadow(aChild),
+                                    nullptr, Shadow(aAfter)));
   } else {
     MOZ_LAYERS_LOG(("[LayersForwarder] OpRaiseToTopChild container=%p child=%p",
                    aContainer->AsLayer(), aChild->AsLayer()));
-    mTxn->AddEdit(OpRaiseToTopChild(NULL, Shadow(aContainer),
-                                    NULL, Shadow(aChild)));
+    mTxn->AddEdit(OpRaiseToTopChild(nullptr, Shadow(aContainer),
+                                    nullptr, Shadow(aChild)));
   }
 }
 
@@ -300,7 +298,7 @@ ShadowLayerForwarder::PaintedTiledLayerBuffer(CompositableClient* aCompositable,
 {
   if (XRE_GetProcessType() != GeckoProcessType_Default)
     NS_RUNTIMEABORT("PaintedTiledLayerBuffer must be made IPC safe (not share pointers)");
-  mTxn->AddNoSwapPaint(OpPaintTiledLayerBuffer(NULL, aCompositable->GetIPDLActor(),
+  mTxn->AddNoSwapPaint(OpPaintTiledLayerBuffer(nullptr, aCompositable->GetIPDLActor(),
                                                uintptr_t(aTiledLayerBuffer)));
 }
 
@@ -391,7 +389,7 @@ ShadowLayerForwarder::EndTransaction(InfallibleTArray<EditReply>* aReplies)
 
   AutoTxnEnd _(mTxn);
 
-  if (mTxn->Empty() && !mTxn->RotationChanged()) {
+  if (mTxn->Empty() && !mTxn->RotationChanged() && !mWindowOverlayChanged) {
     MOZ_LAYERS_LOG(("[LayersForwarder] 0-length cset (?) and no rotation event, skipping Update()"));
     return true;
   }
@@ -432,21 +430,21 @@ ShadowLayerForwarder::EndTransaction(InfallibleTArray<EditReply>* aReplies)
     if (Layer* maskLayer = mutant->GetMaskLayer()) {
       common.maskLayerChild() = Shadow(maskLayer->AsShadowableLayer());
     } else {
-      common.maskLayerChild() = NULL;
+      common.maskLayerChild() = nullptr;
     }
-    common.maskLayerParent() = NULL;
+    common.maskLayerParent() = nullptr;
     common.animations() = mutant->GetAnimations();
     attrs.specific() = null_t();
     mutant->FillSpecificAttributes(attrs.specific());
 
     MOZ_LAYERS_LOG(("[LayersForwarder] OpSetLayerAttributes(%p)\n", mutant));
 
-    mTxn->AddEdit(OpSetLayerAttributes(NULL, Shadow(shadow), attrs));
+    mTxn->AddEdit(OpSetLayerAttributes(nullptr, Shadow(shadow), attrs));
   }
 
   AutoInfallibleTArray<Edit, 10> cset;
   size_t nCsets = mTxn->mCset.size() + mTxn->mPaints.size();
-  NS_ABORT_IF_FALSE(nCsets > 0, "should have bailed by now");
+  NS_ABORT_IF_FALSE(nCsets > 0 || mWindowOverlayChanged, "should have bailed by now");
 
   cset.SetCapacity(nCsets);
   if (!mTxn->mCset.empty()) {
@@ -457,6 +455,8 @@ ShadowLayerForwarder::EndTransaction(InfallibleTArray<EditReply>* aReplies)
   if (!mTxn->mPaints.empty()) {
     cset.AppendElements(&mTxn->mPaints.front(), mTxn->mPaints.size());
   }
+
+  mWindowOverlayChanged = false;
 
   TargetConfig targetConfig(mTxn->mTargetBounds, mTxn->mTargetRotation, mTxn->mClientBounds, mTxn->mTargetOrientation);
 

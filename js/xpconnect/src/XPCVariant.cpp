@@ -45,7 +45,7 @@ XPCVariant::XPCVariant(JSContext* cx, jsval aJSVal)
         mJSVal = OBJECT_TO_JSVAL(obj);
 
         JSObject *unwrapped = js::CheckedUnwrap(obj, /* stopAtOuter = */ false);
-        mReturnRawObject = !(unwrapped && IS_WN_WRAPPER(unwrapped));
+        mReturnRawObject = !(unwrapped && IS_WN_REFLECTOR(unwrapped));
     } else
         mReturnRawObject = false;
 }
@@ -69,7 +69,7 @@ void XPCTraceableVariant::TraceJS(JSTracer* trc)
 {
     MOZ_ASSERT(JSVAL_IS_TRACEABLE(mJSVal));
     JS_SET_TRACING_DETAILS(trc, GetTraceName, this, 0);
-    JS_CallValueTracer(trc, &mJSVal, "XPCTraceableVariant::mJSVal");
+    JS_CallHeapValueTracer(trc, &mJSVal, "XPCTraceableVariant::mJSVal");
 }
 
 // static

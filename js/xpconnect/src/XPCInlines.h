@@ -61,13 +61,6 @@ XPCCallContext::GetJSContext() const
     return mJSContext;
 }
 
-inline JSBool
-XPCCallContext::GetContextPopRequired() const
-{
-    CHECK_STATE(HAVE_CONTEXT);
-    return mContextPopRequired;
-}
-
 inline XPCContext::LangType
 XPCCallContext::GetCallerLanguage() const
 {
@@ -121,9 +114,7 @@ inline XPCWrappedNativeProto*
 XPCCallContext::GetProto() const
 {
     CHECK_STATE(HAVE_OBJECT);
-    if (mWrapper)
-        return mWrapper->GetProto();
-    return mFlattenedJSObject ? GetSlimWrapperProto(mFlattenedJSObject) : nullptr;
+    return mWrapper ? mWrapper->GetProto() : nullptr;
 }
 
 inline JSBool
@@ -268,20 +259,6 @@ XPCCallContext::SetMethodIndex(uint16_t index)
 {
     CHECK_STATE(HAVE_OBJECT);
     mMethodIndex = index;
-}
-
-inline JSBool
-XPCCallContext::GetDestroyJSContextInDestructor() const
-{
-    CHECK_STATE(HAVE_CONTEXT);
-    return mDestroyJSContextInDestructor;
-}
-
-inline void
-XPCCallContext::SetDestroyJSContextInDestructor(JSBool b)
-{
-    CHECK_STATE(HAVE_CONTEXT);
-    mDestroyJSContextInDestructor = b;
 }
 
 /***************************************************************************/

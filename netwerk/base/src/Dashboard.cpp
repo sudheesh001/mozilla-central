@@ -13,7 +13,7 @@ using mozilla::AutoSafeJSContext;
 namespace mozilla {
 namespace net {
 
-NS_IMPL_THREADSAFE_ISUPPORTS2(Dashboard, nsIDashboard, nsIDashboardEventNotifier)
+NS_IMPL_ISUPPORTS2(Dashboard, nsIDashboard, nsIDashboardEventNotifier)
 using mozilla::dom::Sequence;
 
 Dashboard::Dashboard()
@@ -138,11 +138,14 @@ Dashboard::GetHttpConnections()
     dict.mPort.Construct();
     dict.mSpdy.Construct();
     dict.mSsl.Construct();
+    dict.mHalfOpens.Construct();
 
     using mozilla::dom::HttpConnInfoDict;
+    using mozilla::dom::HalfOpenInfoDict;
     Sequence<HttpConnInfoDict> &active = dict.mActive.Value();
     Sequence<nsString> &hosts = dict.mHost.Value();
     Sequence<HttpConnInfoDict> &idle = dict.mIdle.Value();
+    Sequence<HalfOpenInfoDict> &halfOpens = dict.mHalfOpens.Value();
     Sequence<uint32_t> &ports = dict.mPort.Value();
     Sequence<bool> &spdy = dict.mSpdy.Value();
     Sequence<bool> &ssl = dict.mSsl.Value();
@@ -150,7 +153,8 @@ Dashboard::GetHttpConnections()
     uint32_t length = mHttp.data.Length();
     if (!active.SetCapacity(length) || !hosts.SetCapacity(length) ||
         !idle.SetCapacity(length) || !ports.SetCapacity(length) ||
-        !spdy.SetCapacity(length) || !ssl.SetCapacity(length)) {
+        !spdy.SetCapacity(length) || !ssl.SetCapacity(length) ||
+        !halfOpens.SetCapacity(length)) {
             mHttp.cb = nullptr;
             mHttp.data.Clear();
             JS_ReportOutOfMemory(cx);
@@ -165,10 +169,13 @@ Dashboard::GetHttpConnections()
         HttpConnInfoDict &activeInfo = *active.AppendElement();
         activeInfo.mRtt.Construct();
         activeInfo.mTtl.Construct();
+        activeInfo.mProtocolVersion.Construct();
         Sequence<uint32_t> &active_rtt = activeInfo.mRtt.Value();
         Sequence<uint32_t> &active_ttl = activeInfo.mTtl.Value();
+        Sequence<nsString> &active_protocolVersion = activeInfo.mProtocolVersion.Value();
         if (!active_rtt.SetCapacity(mHttp.data[i].active.Length()) ||
-            !active_ttl.SetCapacity(mHttp.data[i].active.Length())) {
+            !active_ttl.SetCapacity(mHttp.data[i].active.Length()) ||
+            !active_protocolVersion.SetCapacity(mHttp.data[i].active.Length())) {
                 mHttp.cb = nullptr;
                 mHttp.data.Clear();
                 JS_ReportOutOfMemory(cx);
@@ -177,15 +184,19 @@ Dashboard::GetHttpConnections()
         for (uint32_t j = 0; j < mHttp.data[i].active.Length(); j++) {
             *active_rtt.AppendElement() = mHttp.data[i].active[j].rtt;
             *active_ttl.AppendElement() = mHttp.data[i].active[j].ttl;
+            *active_protocolVersion.AppendElement() = mHttp.data[i].active[j].protocolVersion;
         }
 
         HttpConnInfoDict &idleInfo = *idle.AppendElement();
         idleInfo.mRtt.Construct();
         idleInfo.mTtl.Construct();
+        idleInfo.mProtocolVersion.Construct();
         Sequence<uint32_t> &idle_rtt = idleInfo.mRtt.Value();
         Sequence<uint32_t> &idle_ttl = idleInfo.mTtl.Value();
+        Sequence<nsString> &idle_protocolVersion = idleInfo.mProtocolVersion.Value();
         if (!idle_rtt.SetCapacity(mHttp.data[i].idle.Length()) ||
-            !idle_ttl.SetCapacity(mHttp.data[i].idle.Length())) {
+            !idle_ttl.SetCapacity(mHttp.data[i].idle.Length()) ||
+            !idle_protocolVersion.SetCapacity(mHttp.data[i].idle.Length())) {
                 mHttp.cb = nullptr;
                 mHttp.data.Clear();
                 JS_ReportOutOfMemory(cx);
@@ -194,6 +205,21 @@ Dashboard::GetHttpConnections()
         for (uint32_t j = 0; j < mHttp.data[i].idle.Length(); j++) {
             *idle_rtt.AppendElement() = mHttp.data[i].idle[j].rtt;
             *idle_ttl.AppendElement() = mHttp.data[i].idle[j].ttl;
+            *idle_protocolVersion.AppendElement() = mHttp.data[i].idle[j].protocolVersion;
+        }
+
+        HalfOpenInfoDict &allHalfOpens = *halfOpens.AppendElement();
+        allHalfOpens.mSpeculative.Construct();
+        Sequence<bool> allHalfOpens_speculative;
+        if(!allHalfOpens_speculative.SetCapacity(mHttp.data[i].halfOpens.Length())) {
+                mHttp.cb = nullptr;
+                mHttp.data.Clear();
+                JS_ReportOutOfMemory(cx);
+                return NS_ERROR_OUT_OF_MEMORY;
+        }
+        allHalfOpens_speculative = allHalfOpens.mSpeculative.Value();
+        for(uint32_t j = 0; j < mHttp.data[i].halfOpens.Length(); j++) {
+            *allHalfOpens_speculative.AppendElement() = mHttp.data[i].halfOpens[j].speculative;
         }
     }
 
@@ -434,6 +460,33 @@ Dashboard::GetDNSCacheEntries()
     mDns.cb = nullptr;
 
     return NS_OK;
+}
+
+void
+HttpConnInfo::SetHTTP1ProtocolVersion(uint8_t pv)
+{
+    switch (pv) {
+    case NS_HTTP_VERSION_0_9:
+        protocolVersion.Assign(NS_LITERAL_STRING("http/0.9"));
+        break;
+    case NS_HTTP_VERSION_1_0:
+        protocolVersion.Assign(NS_LITERAL_STRING("http/1.0"));
+        break;
+    case NS_HTTP_VERSION_1_1:
+        protocolVersion.Assign(NS_LITERAL_STRING("http/1.1"));
+        break;
+    default:
+        protocolVersion.Assign(NS_LITERAL_STRING("unknown protocol version"));
+    }
+}
+
+void
+HttpConnInfo::SetHTTP2ProtocolVersion(uint8_t pv)
+{
+    if (pv == SPDY_VERSION_2)
+        protocolVersion.Assign(NS_LITERAL_STRING("spdy/2"));
+    else
+        protocolVersion.Assign(NS_LITERAL_STRING("spdy/3"));
 }
 
 } } // namespace mozilla::net

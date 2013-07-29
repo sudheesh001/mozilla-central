@@ -17,4 +17,4 @@
 #
 # Modifying this file will now automatically clobber the buildbot machines \o/
 #
-Bug 879831 needed to clobber for the removal of jsprobes.cpp
+Bug 878600 requires a clobber on Windows due to bug 890744

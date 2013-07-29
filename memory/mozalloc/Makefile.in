@@ -16,18 +16,12 @@ ifdef _MSC_VER
 STL_FLAGS	= -D_HAS_EXCEPTIONS=0
 endif
 
-LIBRARY_NAME	= mozalloc
 DIST_INSTALL 	= 1
 
 ifeq (gonk,$(MOZ_WIDGET_TOOLKIT))
 FORCE_STATIC_LIB= 1
 else
 FORCE_SHARED_LIB= 1
-endif
-
-# TODO: we do this in crashreporter and storage/src too, should be centralized
-ifeq ($(OS_ARCH),Linux)
-DEFINES += -DXP_LINUX
 endif
 
 ifeq (,$(filter-out OS2,$(OS_ARCH)))

@@ -6,8 +6,8 @@
 
 /* JS::Value implementation. */
 
-#ifndef js_Value_h___
-#define js_Value_h___
+#ifndef js_Value_h
+#define js_Value_h
 
 #include "mozilla/Attributes.h"
 #include "mozilla/FloatingPoint.h"
@@ -53,7 +53,7 @@ namespace JS { class Value; }
  * nice symbolic type tags, however we can only do this when we can force the
  * underlying type of the enum to be the desired size.
  */
-#if defined(__cplusplus) && !defined(__SUNPRO_CC) && !defined(__xlC__)
+#if !defined(__SUNPRO_CC) && !defined(__xlC__)
 
 #if defined(_MSC_VER)
 # define JS_ENUM_HEADER(id, type)              enum id : type
@@ -132,7 +132,7 @@ JS_STATIC_ASSERT(sizeof(JSValueShiftedTag) == sizeof(uint64_t));
 
 #endif
 
-#else  /* defined(__cplusplus) */
+#else  /* !defined(__SUNPRO_CC) && !defined(__xlC__) */
 
 typedef uint8_t JSValueType;
 #define JSVAL_TYPE_DOUBLE            ((uint8_t)0x00)
@@ -180,7 +180,7 @@ typedef uint64_t JSValueShiftedTag;
 #define JSVAL_SHIFTED_TAG_OBJECT     (((uint64_t)JSVAL_TAG_OBJECT)     << JSVAL_TAG_SHIFT)
 
 #endif  /* JS_BITS_PER_WORD */
-#endif  /* defined(__cplusplus) && !defined(__SUNPRO_CC) */
+#endif  /* !defined(__SUNPRO_CC) && !defined(__xlC__) */
 
 #define JSVAL_LOWER_INCL_TYPE_OF_OBJ_OR_NULL_SET        JSVAL_TYPE_NULL
 #define JSVAL_UPPER_EXCL_TYPE_OF_PRIMITIVE_SET          JSVAL_TYPE_OBJECT
@@ -265,7 +265,7 @@ typedef union jsval_layout
 typedef union jsval_layout
 {
     uint64_t asBits;
-#if (!defined(_WIN64) && defined(__cplusplus))
+#if !defined(_WIN64)
     /* MSVC does not pack these correctly :-( */
     struct {
         uint64_t           payload47 : 47;
@@ -1401,14 +1401,14 @@ JS_PUBLIC_API(void) HeapValueRelocate(Value *valuep);
 
 namespace js {
 
-template <> struct RootMethods<const JS::Value>
+template <> struct GCMethods<const JS::Value>
 {
     static JS::Value initial() { return JS::UndefinedValue(); }
     static ThingRootKind kind() { return THING_ROOT_VALUE; }
     static bool poisoned(const JS::Value &v) { return JS::IsPoisonedValue(v); }
 };
 
-template <> struct RootMethods<JS::Value>
+template <> struct GCMethods<JS::Value>
 {
     static JS::Value initial() { return JS::UndefinedValue(); }
     static ThingRootKind kind() { return THING_ROOT_VALUE; }
@@ -1420,6 +1420,7 @@ template <> struct RootMethods<JS::Value>
 #endif
 };
 
+template <class Outer> class UnbarrieredMutableValueOperations;
 template <class Outer> class MutableValueOperations;
 
 /*
@@ -1431,7 +1432,9 @@ template <class Outer> class MutableValueOperations;
 template <class Outer>
 class ValueOperations
 {
+    friend class UnbarrieredMutableValueOperations<Outer>;
     friend class MutableValueOperations<Outer>;
+
     const JS::Value * value() const { return static_cast<const Outer*>(this)->extract(); }
 
   public:
@@ -1464,19 +1467,22 @@ class ValueOperations
     void *toGCThing() const { return value()->toGCThing(); }
 
     JSValueType extractNonDoubleType() const { return value()->extractNonDoubleType(); }
+    uint32_t toPrivateUint32() const { return value()->toPrivateUint32(); }
 
     JSWhyMagic whyMagic() const { return value()->whyMagic(); }
 };
 
 /*
- * A class designed for CRTP use in implementing the mutating parts of the
- * Value interface in Value-like classes.  Outer must be a class inheriting
- * MutableValueOperations<Outer> with visible extractMutable() and extract()
- * methods returning the const Value* and Value* abstracted by Outer.
+ * A class designed for CRTP use in implementing the mutating parts of the Value
+ * interface in Value-like classes that don't need post barriers.  Outer must be
+ * a class inheriting UnbarrieredMutableValueOperations<Outer> with visible
+ * extractMutable() and extract() methods returning the const Value* and Value*
+ * abstracted by Outer.
  */
 template <class Outer>
-class MutableValueOperations : public ValueOperations<Outer>
+class UnbarrieredMutableValueOperations : public ValueOperations<Outer>
 {
+    friend class MutableValueOperations<Outer>;
     JS::Value * value() { return static_cast<Outer*>(this)->extractMutable(); }
 
   public:
@@ -1484,26 +1490,65 @@ class MutableValueOperations : public ValueOperations<Outer>
     void setUndefined() { value()->setUndefined(); }
     void setInt32(int32_t i) { value()->setInt32(i); }
     void setDouble(double d) { value()->setDouble(d); }
-    void setString(JSString *str) { value()->setString(str); }
-    void setString(const JS::Anchor<JSString *> &str) { value()->setString(str); }
-    void setObject(JSObject &obj) { value()->setObject(obj); }
     void setBoolean(bool b) { value()->setBoolean(b); }
     void setMagic(JSWhyMagic why) { value()->setMagic(why); }
     bool setNumber(uint32_t ui) { return value()->setNumber(ui); }
     bool setNumber(double d) { return value()->setNumber(d); }
-    void setObjectOrNull(JSObject *arg) { value()->setObjectOrNull(arg); }
 };
 
 /*
- * Augment the generic Heap<T> interface when T = Value with type-querying
- * and value-extracting operations.
+ * A class designed for CRTP use in implementing all the mutating parts of the
+ * Value interface in Value-like classes.  Outer must be a class inheriting
+ * MutableValueOperations<Outer> with visible extractMutable() and extract()
+ * methods returning the const Value* and Value* abstracted by Outer.
+ */
+template <class Outer>
+class MutableValueOperations : public UnbarrieredMutableValueOperations<Outer>
+{
+  public:
+    void setString(JSString *str) { this->value()->setString(str); }
+    void setString(const JS::Anchor<JSString *> &str) { this->value()->setString(str); }
+    void setObject(JSObject &obj) { this->value()->setObject(obj); }
+    void setObjectOrNull(JSObject *arg) { this->value()->setObjectOrNull(arg); }
+};
+
+/*
+ * Augment the generic Heap<T> interface when T = Value with
+ * type-querying, value-extracting, and mutating operations.
  */
 template <>
-class HeapBase<JS::Value> : public ValueOperations<JS::Heap<JS::Value> >
+class HeapBase<JS::Value> : public UnbarrieredMutableValueOperations<JS::Heap<JS::Value> >
 {
-    friend class ValueOperations<JS::Heap<JS::Value> >;
-    const JS::Value * extract() const {
-        return static_cast<const JS::Heap<JS::Value>*>(this)->address();
+    typedef JS::Heap<JS::Value> Outer;
+
+    friend class ValueOperations<Outer>;
+    friend class UnbarrieredMutableValueOperations<Outer>;
+
+    const JS::Value * extract() const { return static_cast<const Outer*>(this)->address(); }
+    JS::Value * extractMutable() { return static_cast<Outer*>(this)->unsafeGet(); }
+
+    /*
+     * Setters that potentially change the value to a GC thing from a non-GC
+     * thing must call JS::Heap::set() to trigger the post barrier.
+     *
+     * Changing from a GC thing to a non-GC thing value will leave the heap
+     * value in the store buffer, but it will be ingored so this is not a
+     * problem.
+     */
+    void setBarriered(const JS::Value &v) {
+        static_cast<JS::Heap<JS::Value> *>(this)->set(v);
+    }
+
+  public:
+    void setString(JSString *str) { setBarriered(JS::StringValue(str)); }
+    void setString(const JS::Anchor<JSString *> &str) { setBarriered(JS::StringValue(str.get())); }
+    void setObject(JSObject &obj) { setBarriered(JS::ObjectValue(obj)); }
+
+    void setObjectOrNull(JSObject *arg) {
+        if (arg)
+            setObject(*arg);
+        else
+            setNull();
     }
 };
 
@@ -1532,6 +1577,7 @@ class MutableHandleBase<JS::Value> : public MutableValueOperations<JS::MutableHa
         return static_cast<const JS::MutableHandle<JS::Value>*>(this)->address();
     }
 
+    friend class UnbarrieredMutableValueOperations<JS::MutableHandle<JS::Value> >;
     friend class MutableValueOperations<JS::MutableHandle<JS::Value> >;
     JS::Value * extractMutable() {
         return static_cast<JS::MutableHandle<JS::Value>*>(this)->address();
@@ -1550,6 +1596,7 @@ class RootedBase<JS::Value> : public MutableValueOperations<JS::Rooted<JS::Value
         return static_cast<const JS::Rooted<JS::Value>*>(this)->address();
     }
 
+    friend class UnbarrieredMutableValueOperations<JS::Rooted<JS::Value> >;
     friend class MutableValueOperations<JS::Rooted<JS::Value> >;
     JS::Value * extractMutable() {
         return static_cast<JS::Rooted<JS::Value>*>(this)->address();
@@ -1786,4 +1833,4 @@ JSVAL_TO_PRIVATE(jsval v)
     return JSVAL_TO_PRIVATE_PTR_IMPL(JSVAL_TO_IMPL(v));
 }
 
-#endif /* js_Value_h___ */
+#endif /* js_Value_h */

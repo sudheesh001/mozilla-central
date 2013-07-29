@@ -18,7 +18,7 @@ ifneq ($(OS_TARGET),Android)
 DEFINES += -DINET6
 endif
 
-LIBS = $(EXTRA_DSO_LIBS) \
+LIBS = \
   $(XPCOM_LIBS) \
   $(NSPR_LIBS) \
   $(NSS_LIBS) \
@@ -101,24 +101,6 @@ CPPFLAGS += \
 DEFINES += \
   -DGTEST_USE_OWN_TR1_TUPLE=1 \
   $(NULL)
-endif
-
-ifneq ($(OS_TARGET),WINNT)
-ifneq (gonk,$(MOZ_WIDGET_TOOLKIT))
-CPP_UNIT_TESTS = \
-  ice_unittest.cpp \
-  nrappkit_unittest.cpp \
-  sockettransportservice_unittest.cpp \
-  transport_unittests.cpp \
-  runnable_utils_unittest.cpp \
-  turn_unittest.cpp \
-  TestSyncRunnable.cpp \
-  $(NULL)
-ifdef MOZ_SCTP
-CPP_UNIT_TESTS += sctp_unittest.cpp
-endif
-
-endif
 endif
 
 include $(topsrcdir)/config/rules.mk

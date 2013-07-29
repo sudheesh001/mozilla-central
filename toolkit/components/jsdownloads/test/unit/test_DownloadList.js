@@ -10,35 +10,6 @@
 "use strict";
 
 ////////////////////////////////////////////////////////////////////////////////
-//// Globals
-
-/**
- * Returns a new DownloadList object.
- *
- * @return {Promise}
- * @resolves The newly created DownloadList object.
- * @rejects JavaScript exception.
- */
-function promiseNewDownloadList() {
-  // Force the creation of a new public download list.
-  Downloads._publicDownloadList = null;
-  return Downloads.getPublicDownloadList();
-}
-
-/**
- * Returns a new private DownloadList object.
- *
- * @return {Promise}
- * @resolves The newly created DownloadList object.
- * @rejects JavaScript exception.
- */
-function promiseNewPrivateDownloadList() {
-  // Force the creation of a new public download list.
-  Downloads._privateDownloadList = null;
-  return Downloads.getPrivateDownloadList();
-}
-
-////////////////////////////////////////////////////////////////////////////////
 //// Tests
 
 /**
@@ -63,14 +34,14 @@ add_task(function test_add_getAll()
 {
   let list = yield promiseNewDownloadList();
 
-  let downloadOne = yield promiseSimpleDownload();
+  let downloadOne = yield promiseNewDownload();
   list.add(downloadOne);
 
   let itemsOne = yield list.getAll();
   do_check_eq(itemsOne.length, 1);
   do_check_eq(itemsOne[0], downloadOne);
 
-  let downloadTwo = yield promiseSimpleDownload();
+  let downloadTwo = yield promiseNewDownload();
   list.add(downloadTwo);
 
   let itemsTwo = yield list.getAll();
@@ -89,14 +60,14 @@ add_task(function test_remove()
 {
   let list = yield promiseNewDownloadList();
 
-  list.add(yield promiseSimpleDownload());
-  list.add(yield promiseSimpleDownload());
+  list.add(yield promiseNewDownload());
+  list.add(yield promiseNewDownload());
 
   let items = yield list.getAll();
   list.remove(items[0]);
 
   // Removing an item that was never added should not raise an error.
-  list.remove(yield promiseSimpleDownload());
+  list.remove(yield promiseNewDownload());
 
   items = yield list.getAll();
   do_check_eq(items.length, 1);
@@ -110,8 +81,8 @@ add_task(function test_notifications_add_remove()
 {
   let list = yield promiseNewDownloadList();
 
-  let downloadOne = yield promiseSimpleDownload();
-  let downloadTwo = yield promiseSimpleDownload();
+  let downloadOne = yield promiseNewDownload();
+  let downloadTwo = yield promiseNewDownload();
   list.add(downloadOne);
   list.add(downloadTwo);
 
@@ -132,7 +103,7 @@ add_task(function test_notifications_add_remove()
   do_check_eq(addNotifications, 2);
 
   // Check that we receive add notifications for new elements.
-  list.add(yield promiseSimpleDownload());
+  list.add(yield promiseNewDownload());
   do_check_eq(addNotifications, 3);
 
   // Check that we receive remove notifications.
@@ -154,7 +125,7 @@ add_task(function test_notifications_add_remove()
 
   // We should not receive add notifications after the view is removed.
   list.removeView(viewOne);
-  list.add(yield promiseSimpleDownload());
+  list.add(yield promiseNewDownload());
   do_check_eq(addNotifications, 3);
 });
 
@@ -165,8 +136,8 @@ add_task(function test_notifications_change()
 {
   let list = yield promiseNewDownloadList();
 
-  let downloadOne = yield promiseSimpleDownload();
-  let downloadTwo = yield promiseSimpleDownload();
+  let downloadOne = yield promiseNewDownload();
+  let downloadTwo = yield promiseNewDownload();
   list.add(downloadOne);
   list.add(downloadTwo);
 
@@ -186,4 +157,90 @@ add_task(function test_notifications_change()
   list.remove(downloadTwo);
   yield downloadTwo.start();
   do_check_false(receivedOnDownloadChanged);
+});
+
+/**
+ * Checks that download is removed on history expiration.
+ */
+add_task(function test_history_expiration()
+{
+  function cleanup() {
+    Services.prefs.clearUserPref("places.history.expiration.max_pages");
+  }
+  do_register_cleanup(cleanup);
+
+  // Set max pages to 0 to make the download expire.
+  Services.prefs.setIntPref("places.history.expiration.max_pages", 0);
+
+  // Add expirable visit for downloads.
+  yield promiseAddDownloadToHistory();
+  yield promiseAddDownloadToHistory(httpUrl("interruptible.txt"));
+
+  let list = yield promiseNewDownloadList();
+  let downloadOne = yield promiseNewDownload();
+  let downloadTwo = yield promiseNewDownload(httpUrl("interruptible.txt"));
+  list.add(downloadOne);
+  list.add(downloadTwo);
+
+  let deferred = Promise.defer();
+  let removeNotifications = 0;
+  let downloadView = {
+    onDownloadRemoved: function (aDownload) {
+      if (++removeNotifications == 2) {
+        deferred.resolve();
+      }
+    },
+  };
+  list.addView(downloadView);
+
+  // Start download one.
+  yield downloadOne.start();
+
+  // Start download two and then cancel it.
+  downloadTwo.start();
+  let promiseCanceled = downloadTwo.cancel();
+
+  // Force a history expiration.
+  let expire = Cc["@mozilla.org/places/expiration;1"]
+                 .getService(Ci.nsIObserver);
+  expire.observe(null, "places-debug-start-expiration", -1);
+
+  yield deferred.promise;
+  yield promiseCanceled;
+
+  cleanup();
+});
+
+/**
+ * Checks all downloads are removed after clearing history.
+ */
+add_task(function test_history_clear()
+{
+  // Add expirable visit for downloads.
+  yield promiseAddDownloadToHistory();
+  yield promiseAddDownloadToHistory();
+
+  let list = yield promiseNewDownloadList();
+  let downloadOne = yield promiseNewDownload();
+  let downloadTwo = yield promiseNewDownload();
+  list.add(downloadOne);
+  list.add(downloadTwo);
+
+  let deferred = Promise.defer();
+  let removeNotifications = 0;
+  let downloadView = {
+    onDownloadRemoved: function (aDownload) {
+      if (++removeNotifications == 2) {
+        deferred.resolve();
+      }
+    },
+  };
+  list.addView(downloadView);
+
+  yield downloadOne.start();
+  yield downloadTwo.start();
+
+  PlacesUtils.history.removeAllPages();
+
+  yield deferred.promise;
 });

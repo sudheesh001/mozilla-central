@@ -4,13 +4,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef jsion_vm_functions_h__
-#define jsion_vm_functions_h__
+#ifndef ion_VMFunctions_h
+#define ion_VMFunctions_h
 
 #include "jspubtd.h"
 
+#include "ion/CompileInfo.h"
+#include "ion/Ion.h"
+#include "ion/IonFrames.h"
+
 namespace js {
 
+class DeclEnvObject;
 class ForkJoinSlice;
 
 namespace ion {
@@ -19,6 +24,7 @@ enum DataType {
     Type_Void,
     Type_Bool,
     Type_Int32,
+    Type_Pointer,
     Type_Object,
     Type_Value,
     Type_Handle,
@@ -219,8 +225,12 @@ struct VMFunction
                   returnType == Type_ParallelResult);
     }
 
-    VMFunction(const VMFunction &o)
-    {
+    VMFunction(const VMFunction &o) {
+        init(o);
+    }
+
+    void init(const VMFunction &o) {
+        JS_ASSERT(!wrapped);
         *this = o;
         addToFunctions();
     }
@@ -228,6 +238,31 @@ struct VMFunction
   private:
     // Add this to the global list of VMFunctions.
     void addToFunctions();
+};
+
+// A collection of VM functions for each execution mode.
+struct VMFunctionsModal
+{
+    VMFunctionsModal(const VMFunction &info) {
+        add(info);
+    }
+    VMFunctionsModal(const VMFunction &info1, const VMFunction &info2) {
+        add(info1);
+        add(info2);
+    }
+
+    inline const VMFunction &operator[](ExecutionMode mode) const {
+        JS_ASSERT((unsigned)mode < NumExecutionModes);
+        return funs_[mode];
+    }
+
+  private:
+    void add(const VMFunction &info) {
+        JS_ASSERT((unsigned)info.executionMode < NumExecutionModes);
+        funs_[info.executionMode].init(info);
+    }
+
+    VMFunction funs_[NumExecutionModes];
 };
 
 template <class> struct TypeToDataType { /* Unexpected return type for a VMFunction. */ };
@@ -327,8 +362,10 @@ template <class> struct OutParamToDataType { static const DataType result = Type
 template <> struct OutParamToDataType<Value *> { static const DataType result = Type_Value; };
 template <> struct OutParamToDataType<int *> { static const DataType result = Type_Int32; };
 template <> struct OutParamToDataType<uint32_t *> { static const DataType result = Type_Int32; };
+template <> struct OutParamToDataType<uint8_t **> { static const DataType result = Type_Pointer; };
 template <> struct OutParamToDataType<MutableHandleValue> { static const DataType result = Type_Handle; };
 template <> struct OutParamToDataType<MutableHandleObject> { static const DataType result = Type_Handle; };
+template <> struct OutParamToDataType<MutableHandleString> { static const DataType result = Type_Handle; };
 
 template <class> struct OutParamToRootType {
     static const VMFunction::RootType result = VMFunction::RootNone;
@@ -349,6 +386,12 @@ template <> struct MatchContext<JSContext *> {
 };
 template <> struct MatchContext<ForkJoinSlice *> {
     static const ExecutionMode execMode = ParallelExecution;
+};
+template <> struct MatchContext<ThreadSafeContext *> {
+    // ThreadSafeContext functions can be called from either mode, but for
+    // calling from parallel they need to be wrapped first to return a
+    // ParallelResult, so we default to SequentialExecution here.
+    static const ExecutionMode execMode = SequentialExecution;
 };
 
 #define FOR_EACH_ARGS_1(Macro, Sep, Last) Macro(1) Last(1)
@@ -556,6 +599,7 @@ bool IteratorMore(JSContext *cx, HandleObject obj, JSBool *res);
 JSObject *NewInitParallelArray(JSContext *cx, HandleObject templateObj);
 JSObject *NewInitArray(JSContext *cx, uint32_t count, types::TypeObject *type);
 JSObject *NewInitObject(JSContext *cx, HandleObject templateObject);
+JSObject *NewInitObjectWithClassPrototype(JSContext *cx, HandleObject templateObject);
 
 bool ArrayPopDense(JSContext *cx, HandleObject obj, MutableHandleValue rval);
 bool ArrayPushDense(JSContext *cx, HandleObject obj, HandleValue v, uint32_t *length);
@@ -618,5 +662,4 @@ bool InitBaselineFrameForOsr(BaselineFrame *frame, StackFrame *interpFrame,
 } // namespace ion
 } // namespace js
 
-#endif // jsion_vm_functions_h_
-
+#endif /* ion_VMFunctions_h */

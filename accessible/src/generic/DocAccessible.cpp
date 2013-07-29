@@ -1265,7 +1265,7 @@ DocAccessible::GetAccessibleByUniqueIDInSubtree(void* aUniqueID)
 }
 
 Accessible*
-DocAccessible::GetAccessibleOrContainer(nsINode* aNode)
+DocAccessible::GetAccessibleOrContainer(nsINode* aNode) const
 {
   if (!aNode || !aNode->IsInDoc())
     return nullptr;
@@ -1276,6 +1276,30 @@ DocAccessible::GetAccessibleOrContainer(nsINode* aNode)
          (currNode = currNode->GetParentNode()));
 
   return accessible;
+}
+
+Accessible*
+DocAccessible::GetAccessibleOrDescendant(nsINode* aNode) const
+{
+  Accessible* acc = GetAccessible(aNode);
+  if (acc)
+    return acc;
+
+  acc = GetContainerAccessible(aNode);
+  if (acc) {
+    uint32_t childCnt = acc->ChildCount();
+    for (uint32_t idx = 0; idx < childCnt; idx++) {
+      Accessible* child = acc->GetChildAt(idx);
+      for (nsIContent* elm = child->GetContent();
+           elm && elm != acc->GetContent();
+           elm = elm->GetFlattenedTreeParent()) {
+        if (elm == aNode)
+          return child;
+      }
+    }
+  }
+
+  return nullptr;
 }
 
 bool
@@ -1377,8 +1401,9 @@ DocAccessible::RecreateAccessible(nsIContent* aContent)
   // coalescence with normal hide and show events. Note, in this case they
   // should be coalesced with normal show/hide events.
 
-  ContentRemoved(aContent->GetParent(), aContent);
-  ContentInserted(aContent->GetParent(), aContent, aContent->GetNextSibling());
+  nsIContent* parent = aContent->GetFlattenedTreeParent();
+  ContentRemoved(parent, aContent);
+  ContentInserted(parent, aContent, aContent->GetNextSibling());
 }
 
 void

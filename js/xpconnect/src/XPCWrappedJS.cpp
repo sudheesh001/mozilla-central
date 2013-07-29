@@ -8,7 +8,7 @@
 
 #include "xpcprivate.h"
 #include "nsCxPusher.h"
-#include "nsAtomicRefcnt.h"
+#include "nsContentUtils.h"
 #include "nsProxyRelease.h"
 #include "nsThreadUtils.h"
 #include "nsTextFormatter.h"
@@ -156,7 +156,7 @@ nsXPCWrappedJS::AddRef(void)
 {
     if (!MOZ_LIKELY(NS_IsMainThread() || NS_IsCycleCollectorThread()))
         MOZ_CRASH();
-    nsrefcnt cnt = NS_AtomicIncrementRefcnt(mRefCnt);
+    nsrefcnt cnt = ++mRefCnt;
     NS_LOG_ADDREF(this, cnt, "nsXPCWrappedJS", sizeof(*this));
 
     if (2 == cnt && IsValid()) {
@@ -196,7 +196,7 @@ nsXPCWrappedJS::Release(void)
 
 do_decrement:
 
-    nsrefcnt cnt = NS_AtomicDecrementRefcnt(mRefCnt);
+    nsrefcnt cnt = --mRefCnt;
     NS_LOG_RELEASE(this, cnt, "nsXPCWrappedJS");
 
     if (0 == cnt) {
@@ -222,7 +222,7 @@ nsXPCWrappedJS::TraceJS(JSTracer* trc)
 {
     NS_ASSERTION(mRefCnt >= 2 && IsValid(), "must be strongly referenced");
     JS_SET_TRACING_DETAILS(trc, GetTraceName, this, 0);
-    JS_CallObjectTracer(trc, &mJSObj, "nsXPCWrappedJS::mJSObj");
+    JS_CallHeapObjectTracer(trc, &mJSObj, "nsXPCWrappedJS::mJSObj");
 }
 
 // static
@@ -274,7 +274,7 @@ CheckMainThreadOnly(nsXPCWrappedJS *aWrapper)
 
 // static
 nsresult
-nsXPCWrappedJS::GetNewOrUsed(JSObject* aJSObj,
+nsXPCWrappedJS::GetNewOrUsed(JS::HandleObject jsObj,
                              REFNSIID aIID,
                              nsISupports* aOuter,
                              nsXPCWrappedJS** wrapperResult)
@@ -284,7 +284,6 @@ nsXPCWrappedJS::GetNewOrUsed(JSObject* aJSObj,
         MOZ_CRASH();
 
     AutoJSContext cx;
-    JS::RootedObject jsObj(cx, aJSObj);
     JSObject2WrappedJSMap* map;
     nsXPCWrappedJS* root = nullptr;
     nsXPCWrappedJS* wrapper = nullptr;
@@ -338,7 +337,7 @@ nsXPCWrappedJS::GetNewOrUsed(JSObject* aJSObj,
                        (void*)wrapper, (void*)jsObj);
 #endif
                 XPCAutoLock lock(rt->GetMapLock());
-                map->Add(root);
+                map->Add(cx, root);
             }
 
             if (!CheckMainThreadOnly(root)) {
@@ -371,7 +370,7 @@ nsXPCWrappedJS::GetNewOrUsed(JSObject* aJSObj,
                        (void*)root, (void*)rootJSObj);
 #endif
                 XPCAutoLock lock(rt->GetMapLock());
-                map->Add(root);
+                map->Add(cx, root);
             }
 
             if (!CheckMainThreadOnly(root)) {
@@ -508,7 +507,7 @@ nsXPCWrappedJS::Unlink()
     if (mOuter) {
         XPCJSRuntime* rt = nsXPConnect::GetRuntimeInstance();
         if (rt->GetThreadRunningGC()) {
-            rt->DeferredRelease(mOuter);
+            nsContentUtils::DeferredFinalize(mOuter);
             mOuter = nullptr;
         } else {
             NS_RELEASE(mOuter);
@@ -655,7 +654,7 @@ nsXPCWrappedJS::DebugDump(int16_t depth)
 
         bool isRoot = mRoot == this;
         XPC_LOG_ALWAYS(("%s wrapper around JSObject @ %x", \
-                        isRoot ? "ROOT":"non-root", mJSObj));
+                        isRoot ? "ROOT":"non-root", mJSObj.get()));
         char* name;
         GetClass()->GetInterfaceInfo()->GetName(&name);
         XPC_LOG_ALWAYS(("interface name is %s", name));

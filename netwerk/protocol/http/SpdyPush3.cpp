@@ -4,6 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// HttpLog.h should generally be included first
+#include "HttpLog.h"
+
 #include <algorithm>
 
 #include "nsDependentString.h"
@@ -205,7 +208,7 @@ SpdyPushCache3::RemovePushedStream(nsCString key)
 // stream has not yet been matched with a pull request
 //////////////////////////////////////////
 
-NS_IMPL_THREADSAFE_ISUPPORTS0(SpdyPush3TransactionBuffer)
+NS_IMPL_ISUPPORTS0(SpdyPush3TransactionBuffer)
 
 SpdyPush3TransactionBuffer::SpdyPush3TransactionBuffer()
   : mStatus(NS_OK)

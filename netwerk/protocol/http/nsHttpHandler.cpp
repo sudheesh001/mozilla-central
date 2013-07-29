@@ -4,6 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// HttpLog.h should generally be included first
+#include "HttpLog.h"
+
 #include "nsHttp.h"
 #include "nsHttpHandler.h"
 #include "nsHttpChannel.h"
@@ -12,6 +15,11 @@
 #include "nsHttpTransaction.h"
 #include "nsHttpAuthCache.h"
 #include "nsStandardURL.h"
+#include "nsIDOMConnection.h"
+#include "nsIDOMWindow.h"
+#include "nsIDOMNavigator.h"
+#include "nsIMozNavigatorNetwork.h"
+#include "nsINetworkProperties.h"
 #include "nsIHttpChannel.h"
 #include "nsIURL.h"
 #include "nsIStandardURL.h"
@@ -39,6 +47,7 @@
 #include "mozIApplicationClearPrivateDataParams.h"
 #include "nsICancelable.h"
 #include "EventTokenBucket.h"
+#include "Tickler.h"
 
 #include "nsIXULAppInfo.h"
 
@@ -341,6 +350,10 @@ nsHttpHandler::Init()
     }
 
     MakeNewRequestTokenBucket();
+    mWifiTickler = new Tickler();
+    if (NS_FAILED(mWifiTickler->Init()))
+        mWifiTickler = nullptr;
+
     return NS_OK;
 }
 
@@ -1489,13 +1502,13 @@ nsHttpHandler::SetAcceptEncodings(const char *aAcceptEncodings)
 // nsHttpHandler::nsISupports
 //-----------------------------------------------------------------------------
 
-NS_IMPL_THREADSAFE_ISUPPORTS6(nsHttpHandler,
-                              nsIHttpProtocolHandler,
-                              nsIProxiedProtocolHandler,
-                              nsIProtocolHandler,
-                              nsIObserver,
-                              nsISupportsWeakReference,
-                              nsISpeculativeConnect)
+NS_IMPL_ISUPPORTS6(nsHttpHandler,
+                   nsIHttpProtocolHandler,
+                   nsIProxiedProtocolHandler,
+                   nsIProtocolHandler,
+                   nsIObserver,
+                   nsISupportsWeakReference,
+                   nsISpeculativeConnect)
 
 //-----------------------------------------------------------------------------
 // nsHttpHandler::nsIProtocolHandler
@@ -1603,11 +1616,11 @@ nsHttpHandler::NewProxiedChannel(nsIURI *uri,
         // enable pipelining over SSL if requested
         if (mPipeliningOverSSL)
             caps |= NS_HTTP_ALLOW_PIPELINING;
+    }
 
-        if (!IsNeckoChild()) {
-            // HACK: make sure PSM gets initialized on the main thread.
-            net_EnsurePSMInit();
-        }
+    if (!IsNeckoChild()) {
+        // HACK: make sure PSM gets initialized on the main thread.
+        net_EnsurePSMInit();
     }
 
     rv = httpChannel->Init(uri, caps, proxyInfo, proxyResolveFlags, proxyURI);
@@ -1740,6 +1753,8 @@ nsHttpHandler::Observe(nsISupports *subject,
         // clear cache of all authentication credentials.
         mAuthCache.ClearAll();
         mPrivateAuthCache.ClearAll();
+        if (mWifiTickler)
+            mWifiTickler->Cancel();
 
         // ensure connection manager is shutdown
         if (mConnMgr)
@@ -1875,16 +1890,61 @@ nsHttpHandler::SpeculativeConnect(nsIURI *aURI,
     return SpeculativeConnect(ci, aCallbacks);
 }
 
+void
+nsHttpHandler::TickleWifi(nsIInterfaceRequestor *cb)
+{
+    if (!cb || !mWifiTickler)
+        return;
+
+    // If B2G requires a similar mechanism nsINetworkManager, currently only avail
+    // on B2G, contains the necessary information on wifi and gateway
+
+    nsCOMPtr<nsIDOMWindow> domWindow;
+    cb->GetInterface(NS_GET_IID(nsIDOMWindow), getter_AddRefs(domWindow));
+    if (!domWindow)
+        return;
+
+    nsCOMPtr<nsIDOMNavigator> domNavigator;
+    domWindow->GetNavigator(getter_AddRefs(domNavigator));
+    nsCOMPtr<nsIMozNavigatorNetwork> networkNavigator =
+        do_QueryInterface(domNavigator);
+    if (!networkNavigator)
+        return;
+
+    nsCOMPtr<nsIDOMMozConnection> mozConnection;
+    networkNavigator->GetMozConnection(getter_AddRefs(mozConnection));
+    nsCOMPtr<nsINetworkProperties> networkProperties =
+        do_QueryInterface(mozConnection);
+    if (!networkProperties)
+        return;
+
+    uint32_t gwAddress;
+    bool isWifi;
+    nsresult rv;
+
+    rv = networkProperties->GetDhcpGateway(&gwAddress);
+    if (NS_SUCCEEDED(rv))
+        rv = networkProperties->GetIsWifi(&isWifi);
+    if (NS_FAILED(rv))
+        return;
+
+    if (!gwAddress || !isWifi)
+        return;
+
+    mWifiTickler->SetIPV4Address(gwAddress);
+    mWifiTickler->Tickle();
+}
+
 //-----------------------------------------------------------------------------
 // nsHttpsHandler implementation
 //-----------------------------------------------------------------------------
 
-NS_IMPL_THREADSAFE_ISUPPORTS5(nsHttpsHandler,
-                              nsIHttpProtocolHandler,
-                              nsIProxiedProtocolHandler,
-                              nsIProtocolHandler,
-                              nsISupportsWeakReference,
-                              nsISpeculativeConnect)
+NS_IMPL_ISUPPORTS5(nsHttpsHandler,
+                   nsIHttpProtocolHandler,
+                   nsIProxiedProtocolHandler,
+                   nsIProtocolHandler,
+                   nsISupportsWeakReference,
+                   nsISpeculativeConnect)
 
 nsresult
 nsHttpsHandler::Init()

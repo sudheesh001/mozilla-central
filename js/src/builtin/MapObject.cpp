@@ -6,6 +6,8 @@
 
 #include "builtin/MapObject.h"
 
+#include "mozilla/Move.h"
+
 #include "jscntxt.h"
 #include "jsiter.h"
 #include "jsobj.h"
@@ -13,14 +15,18 @@
 #include "gc/Marking.h"
 #include "js/Utility.h"
 #include "vm/GlobalObject.h"
-#include "vm/Stack.h"
+#include "vm/Interpreter.h"
 
 #include "jsobjinlines.h"
+
+#include "gc/Barrier-inl.h"
 
 using namespace js;
 
 using mozilla::DoubleIsInt32;
 using mozilla::IsNaN;
+using mozilla::Move;
+using mozilla::MoveRef;
 
 
 /*** OrderedHashTable ****************************************************************************/
@@ -846,9 +852,11 @@ HashableValue::mark(JSTracer *trc) const
 
 /*** MapIterator *********************************************************************************/
 
-class js::MapIteratorObject : public JSObject
+class MapIteratorObject : public JSObject
 {
   public:
+    static Class class_;
+
     enum { TargetSlot, KindSlot, RangeSlot, SlotCount };
     static const JSFunctionSpec methods[];
     static MapIteratorObject *create(JSContext *cx, HandleObject mapobj, ValueMap *data,
@@ -863,14 +871,7 @@ class js::MapIteratorObject : public JSObject
     static JSBool next(JSContext *cx, unsigned argc, Value *vp);
 };
 
-inline js::MapIteratorObject &
-JSObject::asMapIterator()
-{
-    JS_ASSERT(isMapIterator());
-    return *static_cast<js::MapIteratorObject *>(this);
-}
-
-Class js::MapIteratorClass = {
+Class MapIteratorObject::class_ = {
     "Map Iterator",
     JSCLASS_IMPLEMENTS_BARRIERS |
     JSCLASS_HAS_RESERVED_SLOTS(MapIteratorObject::SlotCount),
@@ -910,7 +911,7 @@ GlobalObject::initMapIteratorProto(JSContext *cx, Handle<GlobalObject *> global)
     if (!base)
         return false;
     Rooted<JSObject*> proto(cx,
-        NewObjectWithGivenProto(cx, &MapIteratorClass, base, global));
+        NewObjectWithGivenProto(cx, &MapIteratorObject::class_, base, global));
     if (!proto)
         return false;
     proto->setSlot(MapIteratorObject::RangeSlot, PrivateValue(NULL));
@@ -933,7 +934,7 @@ MapIteratorObject::create(JSContext *cx, HandleObject mapobj, ValueMap *data,
     if (!range)
         return NULL;
 
-    JSObject *iterobj = NewObjectWithGivenProto(cx, &MapIteratorClass, proto, global);
+    JSObject *iterobj = NewObjectWithGivenProto(cx, &class_, proto, global);
     if (!iterobj) {
         js_delete(range);
         return NULL;
@@ -947,19 +948,19 @@ MapIteratorObject::create(JSContext *cx, HandleObject mapobj, ValueMap *data,
 void
 MapIteratorObject::finalize(FreeOp *fop, JSObject *obj)
 {
-    fop->delete_(obj->asMapIterator().range());
+    fop->delete_(obj->as<MapIteratorObject>().range());
 }
 
 bool
 MapIteratorObject::is(const Value &v)
 {
-    return v.isObject() && v.toObject().hasClass(&MapIteratorClass);
+    return v.isObject() && v.toObject().hasClass(&class_);
 }
 
 bool
 MapIteratorObject::next_impl(JSContext *cx, CallArgs args)
 {
-    MapIteratorObject &thisobj = args.thisv().toObject().asMapIterator();
+    MapIteratorObject &thisobj = args.thisv().toObject().as<MapIteratorObject>();
     ValueMap::Range *range = thisobj.range();
     if (!range)
         return js_ThrowStopIteration(cx);
@@ -1003,13 +1004,6 @@ MapIteratorObject::next(JSContext *cx, unsigned argc, Value *vp)
 
 /*** Map *****************************************************************************************/
 
-inline js::MapObject &
-JSObject::asMap()
-{
-    JS_ASSERT(hasClass(&MapObject::class_));
-    return *static_cast<js::MapObject *>(this);
-}
-
 Class MapObject::class_ = {
     "Map",
     JSCLASS_HAS_PRIVATE | JSCLASS_IMPLEMENTS_BARRIERS |
@@ -1024,8 +1018,8 @@ Class MapObject::class_ = {
     finalize,
     NULL,                    // checkAccess
     NULL,                    // call
-    NULL,                    // construct
     NULL,                    // hasInstance
+    NULL,                    // construct
     mark
 };
 
@@ -1042,6 +1036,7 @@ const JSFunctionSpec MapObject::methods[] = {
     JS_FN("keys", keys, 0, 0),
     JS_FN("values", values, 0, 0),
     JS_FN("clear", clear, 0, 0),
+    {"forEach", {NULL, NULL}, 2, 0, "MapForEach"},
     JS_FS_END
 };
 
@@ -1068,7 +1063,7 @@ InitClass(JSContext *cx, Handle<GlobalObject*> global, Class *clasp, JSProtoKey 
 JSObject *
 MapObject::initClass(JSContext *cx, JSObject *obj)
 {
-    Rooted<GlobalObject*> global(cx, &obj->asGlobal());
+    Rooted<GlobalObject*> global(cx, &obj->as<GlobalObject>());
     RootedObject proto(cx,
         InitClass(cx, global, &class_, JSProto_Map, construct, properties, methods));
     if (proto) {
@@ -1115,7 +1110,7 @@ MarkKey(Range &r, const HashableValue &key, JSTracer *trc)
 void
 MapObject::mark(JSTracer *trc, JSObject *obj)
 {
-    if (ValueMap *map = obj->asMap().getData()) {
+    if (ValueMap *map = obj->as<MapObject>().getData()) {
         for (ValueMap::Range r = map->all(); !r.empty(); r.popFront()) {
             MarkKey(r, r.front().key, trc);
             gc::MarkValue(trc, &r.front().value, "value");
@@ -1131,17 +1126,7 @@ class OrderedHashTableRef : public gc::BufferableRef
     HashableValue key;
 
   public:
-    OrderedHashTableRef(TableType *t, const HashableValue &k) : table(t), key(k) {}
-
-    bool match(void *location) {
-        if (!table->has(key))
-            return false;
-        for (typename TableType::Range r = table->all(); !r.empty(); r.popFront()) {
-            if ((void*)&r.front() == location)
-                return true;
-        }
-        return false;
-    }
+    explicit OrderedHashTableRef(TableType *t, const HashableValue &k) : table(t), key(k) {}
 
     void mark(JSTracer *trc) {
         HashableValue prior = key;
@@ -1163,7 +1148,7 @@ WriteBarrierPost(JSRuntime *rt, TableType *table, const HashableValue &key)
 void
 MapObject::finalize(FreeOp *fop, JSObject *obj)
 {
-    if (ValueMap *map = obj->asMap().getData())
+    if (ValueMap *map = obj->as<MapObject>().getData())
         fop->delete_(map);
 }
 
@@ -1234,7 +1219,7 @@ MapObject::extract(CallReceiver call)
 {
     JS_ASSERT(call.thisv().isObject());
     JS_ASSERT(call.thisv().toObject().hasClass(&MapObject::class_));
-    return *call.thisv().toObject().asMap().getData();
+    return *call.thisv().toObject().as<MapObject>().getData();
 }
 
 bool
@@ -1354,7 +1339,7 @@ MapObject::delete_(JSContext *cx, unsigned argc, Value *vp)
 bool
 MapObject::iterator_impl(JSContext *cx, CallArgs args, IteratorKind kind)
 {
-    Rooted<MapObject*> mapobj(cx, &args.thisv().toObject().asMap());
+    Rooted<MapObject*> mapobj(cx, &args.thisv().toObject().as<MapObject>());
     ValueMap &map = *mapobj->getData();
     Rooted<JSObject*> iterobj(cx, MapIteratorObject::create(cx, mapobj, &map, kind));
     if (!iterobj)
@@ -1405,7 +1390,7 @@ MapObject::entries(JSContext *cx, unsigned argc, Value *vp)
 bool
 MapObject::clear_impl(JSContext *cx, CallArgs args)
 {
-    Rooted<MapObject*> mapobj(cx, &args.thisv().toObject().asMap());
+    Rooted<MapObject*> mapobj(cx, &args.thisv().toObject().as<MapObject>());
     if (!mapobj->getData()->clear()) {
         js_ReportOutOfMemory(cx);
         return false;
@@ -1430,9 +1415,11 @@ js_InitMapClass(JSContext *cx, HandleObject obj)
 
 /*** SetIterator *********************************************************************************/
 
-class js::SetIteratorObject : public JSObject
+class SetIteratorObject : public JSObject
 {
   public:
+    static Class class_;
+
     enum { TargetSlot, KindSlot, RangeSlot, SlotCount };
     static const JSFunctionSpec methods[];
     static SetIteratorObject *create(JSContext *cx, HandleObject setobj, ValueSet *data,
@@ -1447,14 +1434,7 @@ class js::SetIteratorObject : public JSObject
     static JSBool next(JSContext *cx, unsigned argc, Value *vp);
 };
 
-inline js::SetIteratorObject &
-JSObject::asSetIterator()
-{
-    JS_ASSERT(isSetIterator());
-    return *static_cast<js::SetIteratorObject *>(this);
-}
-
-Class js::SetIteratorClass = {
+Class SetIteratorObject::class_ = {
     "Set Iterator",
     JSCLASS_IMPLEMENTS_BARRIERS |
     JSCLASS_HAS_RESERVED_SLOTS(SetIteratorObject::SlotCount),
@@ -1493,7 +1473,7 @@ GlobalObject::initSetIteratorProto(JSContext *cx, Handle<GlobalObject*> global)
     JSObject *base = global->getOrCreateIteratorPrototype(cx);
     if (!base)
         return false;
-    RootedObject proto(cx, NewObjectWithGivenProto(cx, &SetIteratorClass, base, global));
+    RootedObject proto(cx, NewObjectWithGivenProto(cx, &SetIteratorObject::class_, base, global));
     if (!proto)
         return false;
     proto->setSlot(SetIteratorObject::RangeSlot, PrivateValue(NULL));
@@ -1516,7 +1496,7 @@ SetIteratorObject::create(JSContext *cx, HandleObject setobj, ValueSet *data,
     if (!range)
         return NULL;
 
-    JSObject *iterobj = NewObjectWithGivenProto(cx, &SetIteratorClass, proto, global);
+    JSObject *iterobj = NewObjectWithGivenProto(cx, &class_, proto, global);
     if (!iterobj) {
         js_delete(range);
         return NULL;
@@ -1530,19 +1510,19 @@ SetIteratorObject::create(JSContext *cx, HandleObject setobj, ValueSet *data,
 void
 SetIteratorObject::finalize(FreeOp *fop, JSObject *obj)
 {
-    fop->delete_(obj->asSetIterator().range());
+    fop->delete_(obj->as<SetIteratorObject>().range());
 }
 
 bool
 SetIteratorObject::is(const Value &v)
 {
-    return v.isObject() && v.toObject().hasClass(&SetIteratorClass);
+    return v.isObject() && v.toObject().is<SetIteratorObject>();
 }
 
 bool
 SetIteratorObject::next_impl(JSContext *cx, CallArgs args)
 {
-    SetIteratorObject &thisobj = args.thisv().toObject().asSetIterator();
+    SetIteratorObject &thisobj = args.thisv().toObject().as<SetIteratorObject>();
     ValueSet::Range *range = thisobj.range();
     if (!range)
         return js_ThrowStopIteration(cx);
@@ -1583,13 +1563,6 @@ SetIteratorObject::next(JSContext *cx, unsigned argc, Value *vp)
 
 /*** Set *****************************************************************************************/
 
-inline js::SetObject &
-JSObject::asSet()
-{
-    JS_ASSERT(hasClass(&SetObject::class_));
-    return *static_cast<js::SetObject *>(this);
-}
-
 Class SetObject::class_ = {
     "Set",
     JSCLASS_HAS_PRIVATE | JSCLASS_IMPLEMENTS_BARRIERS |
@@ -1604,8 +1577,8 @@ Class SetObject::class_ = {
     finalize,
     NULL,                    // checkAccess
     NULL,                    // call
-    NULL,                    // construct
     NULL,                    // hasInstance
+    NULL,                    // construct
     mark
 };
 
@@ -1620,13 +1593,14 @@ const JSFunctionSpec SetObject::methods[] = {
     JS_FN("delete", delete_, 1, 0),
     JS_FN("entries", entries, 0, 0),
     JS_FN("clear", clear, 0, 0),
+    {"forEach", {NULL, NULL}, 2, 0, "SetForEach"},
     JS_FS_END
 };
 
 JSObject *
 SetObject::initClass(JSContext *cx, JSObject *obj)
 {
-    Rooted<GlobalObject*> global(cx, &obj->asGlobal());
+    Rooted<GlobalObject*> global(cx, &obj->as<GlobalObject>());
     RootedObject proto(cx,
         InitClass(cx, global, &class_, JSProto_Set, construct, properties, methods));
     if (proto) {
@@ -1799,7 +1773,7 @@ SetObject::delete_(JSContext *cx, unsigned argc, Value *vp)
 bool
 SetObject::iterator_impl(JSContext *cx, CallArgs args, IteratorKind kind)
 {
-    Rooted<SetObject*> setobj(cx, &args.thisv().toObject().asSet());
+    Rooted<SetObject*> setobj(cx, &args.thisv().toObject().as<SetObject>());
     ValueSet &set = *setobj->getData();
     Rooted<JSObject*> iterobj(cx, SetIteratorObject::create(cx, setobj, &set, kind));
     if (!iterobj)
@@ -1837,7 +1811,7 @@ SetObject::entries(JSContext *cx, unsigned argc, Value *vp)
 bool
 SetObject::clear_impl(JSContext *cx, CallArgs args)
 {
-    Rooted<SetObject*> setobj(cx, &args.thisv().toObject().asSet());
+    Rooted<SetObject*> setobj(cx, &args.thisv().toObject().as<SetObject>());
     if (!setobj->getData()->clear()) {
         js_ReportOutOfMemory(cx);
         return false;

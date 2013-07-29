@@ -239,16 +239,16 @@ nsLocalFile::nsLocalFile(const nsLocalFile& other)
 }
 
 #ifdef MOZ_WIDGET_COCOA
-NS_IMPL_THREADSAFE_ISUPPORTS4(nsLocalFile,
-                              nsILocalFileMac,
-                              nsILocalFile,
-                              nsIFile,
-                              nsIHashable)
+NS_IMPL_ISUPPORTS4(nsLocalFile,
+                   nsILocalFileMac,
+                   nsILocalFile,
+                   nsIFile,
+                   nsIHashable)
 #else
-NS_IMPL_THREADSAFE_ISUPPORTS3(nsLocalFile,
-                              nsILocalFile,
-                              nsIFile,
-                              nsIHashable)
+NS_IMPL_ISUPPORTS3(nsLocalFile,
+                   nsILocalFile,
+                   nsIFile,
+                   nsIHashable)
 #endif
 
 nsresult
@@ -401,7 +401,8 @@ nsLocalFile::OpenNSPRFileDesc(int32_t flags, int32_t mode, PRFileDesc **_retval)
 
 #if defined(LINUX) && !defined(ANDROID)
     if (flags & OS_READAHEAD) {
-        readahead(PR_FileDesc2NativeHandle(*_retval), 0, 0);
+        posix_fadvise(PR_FileDesc2NativeHandle(*_retval), 0, 0,
+                      POSIX_FADV_SEQUENTIAL);
     }
 #endif
     return NS_OK;

@@ -4,15 +4,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#if !defined(jsion_ion_compartment_h__) && defined(JS_ION)
-#define jsion_ion_compartment_h__
+#ifndef ion_IonCompartment_h
+#define ion_IonCompartment_h
 
-#include "IonCode.h"
+#ifdef JS_ION
+
+#include "mozilla/MemoryReporting.h"
+
 #include "jsweakcache.h"
+
+#include "ion/CompileInfo.h"
+#include "ion/IonCode.h"
+#include "ion/IonFrames.h"
 #include "js/Value.h"
 #include "vm/Stack.h"
-#include "IonFrames.h"
-#include "CompileInfo.h"
 
 namespace js {
 namespace ion {
@@ -24,7 +29,30 @@ enum EnterJitType {
     EnterJitOptimized = 1
 };
 
-typedef void (*EnterIonCode)(void *code, int argc, Value *argv, StackFrame *fp,
+struct EnterJitData
+{
+    explicit EnterJitData(JSContext *cx)
+      : scopeChain(cx),
+        result(cx)
+    {}
+
+    uint8_t *jitcode;
+    StackFrame *osrFrame;
+
+    void *calleeToken;
+
+    Value *maxArgv;
+    unsigned maxArgc;
+    unsigned numActualArgs;
+    unsigned osrNumStackValues;
+
+    RootedObject scopeChain;
+    RootedValue result;
+
+    bool constructing;
+};
+
+typedef void (*EnterIonCode)(void *code, unsigned argc, Value *argv, StackFrame *fp,
                              CalleeToken calleeToken, JSObject *scopeChain,
                              size_t numStackValues, Value *vp);
 
@@ -39,7 +67,7 @@ typedef Vector<IonBuilder*, 0, SystemAllocPolicy> OffThreadCompilationVector;
 // Optimized stubs are allocated per-compartment and are always purged when
 // JIT-code is discarded. Fallback stubs are allocated per BaselineScript and
 // are only destroyed when the BaselineScript is destroyed.
-struct ICStubSpace
+class ICStubSpace
 {
   protected:
     LifoAlloc allocator_;
@@ -55,7 +83,7 @@ struct ICStubSpace
 
     JS_DECLARE_NEW_METHODS(allocate, alloc, inline)
 
-    size_t sizeOfExcludingThis(JSMallocSizeOfFun mallocSizeOf) const {
+    size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
         return allocator_.sizeOfExcludingThis(mallocSizeOf);
     }
 };
@@ -98,6 +126,12 @@ class IonRuntime
 
     // Executable allocator.
     JSC::ExecutableAllocator *execAlloc_;
+
+    // Shared post-exception-handler tail
+    IonCode *exceptionTail_;
+
+    // Shared post-bailout-handler tail.
+    IonCode *bailoutTail_;
 
     // Trampoline for entering JIT code. Contains OSR prologue.
     IonCode *enterJIT_;
@@ -142,6 +176,8 @@ class IonRuntime
     AutoFlushCache *flusher_;
 
   private:
+    IonCode *generateExceptionTailStub(JSContext *cx);
+    IonCode *generateBailoutTailStub(JSContext *cx);
     IonCode *generateEnterJIT(JSContext *cx, EnterJitType type);
     IonCode *generateArgumentsRectifier(JSContext *cx, ExecutionMode mode, void **returnAddrOut);
     IonCode *generateBailoutTable(JSContext *cx, uint32_t frameClass);
@@ -189,9 +225,11 @@ class IonCompartment
     typedef WeakValueCache<uint32_t, ReadBarriered<IonCode> > ICStubCodeMap;
     ICStubCodeMap *stubCodes_;
 
-    // Keep track of offset into baseline ICCall_Scripted stub's code at return
+    // Keep track of offset into various baseline stubs' code at return
     // point from called script.
     void *baselineCallReturnAddr_;
+    void *baselineGetPropReturnAddr_;
+    void *baselineSetPropReturnAddr_;
 
     // Allocated space for optimized baseline stubs.
     OptimizedICStubSpace optimizedStubSpace_;
@@ -201,8 +239,9 @@ class IonCompartment
     // pointers. This has to be a weak pointer to avoid keeping the whole
     // compartment alive.
     ReadBarriered<IonCode> stringConcatStub_;
+    ReadBarriered<IonCode> parallelStringConcatStub_;
 
-    IonCode *generateStringConcatStub(JSContext *cx);
+    IonCode *generateStringConcatStub(JSContext *cx, ExecutionMode mode);
 
   public:
     IonCode *getVMWrapper(const VMFunction &f);
@@ -233,6 +272,22 @@ class IonCompartment
         JS_ASSERT(baselineCallReturnAddr_ != NULL);
         return baselineCallReturnAddr_;
     }
+    void initBaselineGetPropReturnAddr(void *addr) {
+        JS_ASSERT(baselineGetPropReturnAddr_ == NULL);
+        baselineGetPropReturnAddr_ = addr;
+    }
+    void *baselineGetPropReturnAddr() {
+        JS_ASSERT(baselineGetPropReturnAddr_ != NULL);
+        return baselineGetPropReturnAddr_;
+    }
+    void initBaselineSetPropReturnAddr(void *addr) {
+        JS_ASSERT(baselineSetPropReturnAddr_ == NULL);
+        baselineSetPropReturnAddr_ = addr;
+    }
+    void *baselineSetPropReturnAddr() {
+        JS_ASSERT(baselineSetPropReturnAddr_ != NULL);
+        return baselineSetPropReturnAddr_;
+    }
 
     void toggleBaselineStubBarriers(bool enabled);
 
@@ -256,13 +311,21 @@ class IonCompartment
         return rt->bailoutHandler_;
     }
 
+    IonCode *getExceptionTail() {
+        return rt->exceptionTail_;
+    }
+
+    IonCode *getBailoutTail() {
+        return rt->bailoutTail_;
+    }
+
     IonCode *getBailoutTable(const FrameSizeClass &frameClass);
 
     IonCode *getArgumentsRectifier(ExecutionMode mode) {
         switch (mode) {
           case SequentialExecution: return rt->argumentsRectifier_;
           case ParallelExecution:   return rt->parallelArgumentsRectifier_;
-          default:                  JS_NOT_REACHED("No such execution mode");
+          default:                  MOZ_ASSUME_UNREACHABLE("No such execution mode");
         }
     }
 
@@ -294,8 +357,12 @@ class IonCompartment
         return rt->debugTrapHandler(cx);
     }
 
-    IonCode *stringConcatStub() {
-        return stringConcatStub_;
+    IonCode *stringConcatStub(ExecutionMode mode) {
+        switch (mode) {
+          case SequentialExecution: return stringConcatStub_;
+          case ParallelExecution:   return parallelStringConcatStub_;
+          default:                  MOZ_ASSUME_UNREACHABLE("No such execution mode");
+        }
     }
 
     AutoFlushCache *flusher() {
@@ -316,5 +383,6 @@ void FinishInvalidation(FreeOp *fop, JSScript *script);
 } // namespace ion
 } // namespace js
 
-#endif // jsion_ion_compartment_h__
+#endif // JS_ION
 
+#endif /* ion_IonCompartment_h */

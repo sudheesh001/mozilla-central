@@ -9,6 +9,7 @@
 #include "mozilla/RangedPtr.h"
 
 #include "jsarray.h"
+#include "jscompartment.h"
 #include "jsnum.h"
 
 #include "vm/StringBuffer.h"
@@ -535,7 +536,7 @@ JSONParser::createFinishedObject(PropertyVector &properties)
      * shape in manually.
      */
     gc::AllocKind allocKind = gc::GetGCObjectKind(properties.length());
-    RootedObject obj(cx, NewBuiltinClassInstance(cx, &ObjectClass, allocKind));
+    RootedObject obj(cx, NewBuiltinClassInstance(cx, &JSObject::class_, allocKind));
     if (!obj)
         return NULL;
 

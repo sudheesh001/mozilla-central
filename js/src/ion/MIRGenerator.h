@@ -4,19 +4,24 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef jsion_mirgen_h__
-#define jsion_mirgen_h__
+#ifndef ion_MIRGenerator_h
+#define ion_MIRGenerator_h
 
 // This file declares the data structures used to build a control-flow graph
 // containing MIR.
+
 #include <stdarg.h>
 
 #include "jscntxt.h"
 #include "jscompartment.h"
-#include "IonAllocPolicy.h"
-#include "IonCompartment.h"
-#include "CompileInfo.h"
-#include "RegisterSets.h"
+
+#include "ion/CompileInfo.h"
+#include "ion/IonAllocPolicy.h"
+#include "ion/IonCompartment.h"
+#if defined(JS_ION_PERF)
+# include "ion/PerfSpewer.h"
+#endif
+#include "ion/RegisterSets.h"
 
 namespace js {
 namespace ion {
@@ -152,10 +157,16 @@ class MIRGenerator
     AsmJSHeapAccessVector asmJSHeapAccesses_;
 #endif
     AsmJSGlobalAccessVector asmJSGlobalAccesses_;
+
+#if defined(JS_ION_PERF)
+    AsmJSPerfSpewer asmJSPerfSpewer_;
+
+  public:
+    AsmJSPerfSpewer &perfSpewer() { return asmJSPerfSpewer_; }
+#endif
 };
 
 } // namespace ion
 } // namespace js
 
-#endif // jsion_mirgen_h__
-
+#endif /* ion_MIRGenerator_h */

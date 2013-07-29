@@ -16,11 +16,12 @@
 #include "mozilla/Attributes.h"
 
 #include "jsapi.h"
+#include "jsfriendapi.h"
 
 using namespace xpc;
 using namespace JS;
 
-NS_IMPL_THREADSAFE_ISUPPORTS1(nsXPCWrappedJSClass, nsIXPCWrappedJSClass)
+NS_IMPL_ISUPPORTS1(nsXPCWrappedJSClass, nsIXPCWrappedJSClass)
 
 // the value of this variable is never used - we use its address as a sentinel
 static uint32_t zero_methods_descriptor;
@@ -699,8 +700,7 @@ nsXPCWrappedJSClass::DelegatedQueryInterface(nsXPCWrappedJS* self,
 
         bool isSystem;
         rv = secMan->IsSystemPrincipal(objPrin, &isSystem);
-        if ((NS_FAILED(rv) || !isSystem) &&
-            !IS_WRAPPER_CLASS(js::GetObjectClass(selfObj))) {
+        if ((NS_FAILED(rv) || !isSystem) && !IS_WN_REFLECTOR(selfObj)) {
             // A content object.
             nsRefPtr<SameOriginCheckedComponent> checked =
                 new SameOriginCheckedComponent(self);
@@ -960,13 +960,13 @@ nsXPCWrappedJSClass::CheckForException(XPCCallContext & ccx,
     // to run on this JSContext
     nsresult pending_result = xpcc->GetPendingResult();
 
-    jsval js_exception;
-    JSBool is_js_exception = JS_GetPendingException(cx, &js_exception);
+    RootedValue js_exception(cx);
+    JSBool is_js_exception = JS_GetPendingException(cx, js_exception.address());
 
     /* JS might throw an expection whether the reporter was called or not */
     if (is_js_exception) {
         if (!xpc_exception)
-            XPCConvert::JSValToXPCException(js_exception, anInterfaceName,
+            XPCConvert::JSValToXPCException(&js_exception, anInterfaceName,
                                             aPropertyName,
                                             getter_AddRefs(xpc_exception));
 
@@ -1021,8 +1021,14 @@ nsXPCWrappedJSClass::CheckForException(XPCCallContext & ccx,
             // Try to use the error reporter set on the context to handle this
             // error if it came from a JS exception.
             if (reportable && is_js_exception &&
-                JS_GetErrorReporter(cx) != xpcWrappedJSErrorReporter) {
+                JS_GetErrorReporter(cx) != xpcWrappedJSErrorReporter)
+            {
+                // If the error reporter ignores the error, it will call
+                // xpc->MarkErrorUnreported().
+                xpcc->ClearUnreportedError();
                 reportable = !JS_ReportPendingException(cx);
+                if (!xpcc->WasErrorReported())
+                    reportable = true;
             }
 
             if (reportable) {
@@ -1360,7 +1366,7 @@ nsXPCWrappedJSClass::CallMethod(nsXPCWrappedJS* wrapper, uint16_t methodIndex,
             if (param.IsIn()) {
                 if (!JS_SetPropertyById(cx, out_obj,
                                         mRuntime->GetStringID(XPCJSRuntime::IDX_VALUE),
-                                        val.address())) {
+                                        val)) {
                     goto pre_call_clean_up;
                 }
             }
@@ -1427,8 +1433,8 @@ pre_call_clean_up:
     if (XPT_MD_IS_GETTER(info->flags)) {
         success = JS_GetProperty(cx, obj, name, rval.address());
     } else if (XPT_MD_IS_SETTER(info->flags)) {
-        success = JS_SetProperty(cx, obj, name, argv);
         rval = *argv;
+        success = JS_SetProperty(cx, obj, name, rval);
     } else {
         if (!JSVAL_IS_PRIMITIVE(fval)) {
             uint32_t oldOpts = JS_GetOptions(cx);
@@ -1650,8 +1656,37 @@ nsXPCWrappedJSClass::GetInterfaceName()
     return mName;
 }
 
+static void
+FinalizeStub(JSFreeOp *fop, JSObject *obj)
+{
+}
+
+static JSClass XPCOutParamClass = {
+    "XPCOutParam",
+    0,
+    JS_PropertyStub,
+    JS_DeletePropertyStub,
+    JS_PropertyStub,
+    JS_StrictPropertyStub,
+    JS_EnumerateStub,
+    JS_ResolveStub,
+    JS_ConvertStub,
+    FinalizeStub,
+    NULL,   /* checkAccess */
+    NULL,   /* call */
+    NULL,   /* hasInstance */
+    NULL,   /* construct */
+    NULL    /* trace */
+};
+
+bool
+xpc::IsOutObject(JSContext* cx, JSObject* obj)
+{
+    return js::GetObjectJSClass(obj) == &XPCOutParamClass;
+}
+
 JSObject*
-nsXPCWrappedJSClass::NewOutObject(JSContext* cx, JSObject* scope)
+xpc::NewOutObject(JSContext* cx, JSObject* scope)
 {
     return JS_NewObject(cx, nullptr, nullptr, JS_GetGlobalForObject(cx, scope));
 }

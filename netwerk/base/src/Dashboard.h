@@ -14,6 +14,7 @@
 #include "nsIThread.h"
 #include "nsSocketTransport2.h"
 #include "mozilla/net/DashboardTypes.h"
+#include "nsHttp.h"
 
 namespace mozilla {
 namespace net {
@@ -23,7 +24,7 @@ class Dashboard:
     public nsIDashboardEventNotifier
 {
 public:
-    NS_DECL_ISUPPORTS
+    NS_DECL_THREADSAFE_ISUPPORTS
     NS_DECL_NSIDASHBOARD
     NS_DECL_NSIDASHBOARDEVENTNOTIFIER
 

@@ -195,7 +195,8 @@ InstallXBLField(JSContext* cx,
   MOZ_ASSERT(field);
 
   // This mirrors code in nsXBLProtoImpl::InstallImplementation
-  nsIScriptGlobalObject* global = xblNode->OwnerDoc()->GetScriptGlobalObject();
+  nsCOMPtr<nsIScriptGlobalObject> global =
+    do_QueryInterface(xblNode->OwnerDoc()->GetWindow());
   if (!global) {
     return true;
   }
@@ -279,9 +280,7 @@ FieldSetterImpl(JSContext *cx, JS::CallArgs args)
   }
 
   if (installed) {
-    JS::Rooted<JS::Value> v(cx,
-                            args.length() > 0 ? args[0] : JS::UndefinedValue());
-    if (!::JS_SetPropertyById(cx, thisObj, id, v.address())) {
+    if (!::JS_SetPropertyById(cx, thisObj, id, args.get(0))) {
       return false;
     }
   }

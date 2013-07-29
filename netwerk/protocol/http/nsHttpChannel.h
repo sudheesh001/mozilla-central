@@ -36,6 +36,7 @@
 #include "mozilla/Telemetry.h"
 
 class nsAHttpConnection;
+class nsIPrincipal;
 
 namespace mozilla { namespace net {
 
@@ -156,8 +157,6 @@ public: /* internal necko use only */
 
     OfflineCacheEntryAsForeignMarker* GetOfflineCacheEntryAsForeignMarker();
 
-    nsresult OnStopRequestCleanup(nsresult aStatus);
-
 private:
     typedef nsresult (nsHttpChannel::*nsContinueRedirectionFunc)(nsresult result);
 
@@ -182,6 +181,9 @@ private:
     nsresult ContinueProcessFallback(nsresult);
     void     HandleAsyncAbort();
     nsresult EnsureAssocReq();
+    void     ProcessSSLInformation();
+    bool     IsHTTPS();
+    void     RetrieveSSLOptions();
 
     nsresult ContinueOnStartRequest1(nsresult);
     nsresult ContinueOnStartRequest2(nsresult);
@@ -381,6 +383,10 @@ protected:
 
 private: // cache telemetry
     bool mDidReval;
+
+private:
+    nsIPrincipal *GetPrincipal();
+    nsCOMPtr<nsIPrincipal> mPrincipal;
 };
 
 } } // namespace mozilla::net
