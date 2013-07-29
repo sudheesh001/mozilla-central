@@ -4,24 +4,24 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef String_inl_h__
-#define String_inl_h__
+#ifndef vm_String_inl_h
+#define vm_String_inl_h
 
 #include "vm/String.h"
 
 #include "mozilla/PodOperations.h"
 
 #include "jscntxt.h"
+
 #include "gc/Marking.h"
 
 #include "jsgcinlines.h"
-#include "jsobjinlines.h"
 
 namespace js {
 
 template <AllowGC allowGC>
 static JS_ALWAYS_INLINE JSInlineString *
-NewShortString(JSContext *cx, JS::Latin1Chars chars)
+NewShortString(ThreadSafeContext *cx, JS::Latin1Chars chars)
 {
     size_t len = chars.length();
     JS_ASSERT(JSShortString::lengthFits(len));
@@ -40,7 +40,7 @@ NewShortString(JSContext *cx, JS::Latin1Chars chars)
 
 template <AllowGC allowGC>
 static JS_ALWAYS_INLINE JSInlineString *
-NewShortString(JSContext *cx, JS::StableTwoByteChars chars)
+NewShortString(ExclusiveContext *cx, JS::StableTwoByteChars chars)
 {
     size_t len = chars.length();
 
@@ -63,7 +63,7 @@ NewShortString(JSContext *cx, JS::StableTwoByteChars chars)
 
 template <AllowGC allowGC>
 static JS_ALWAYS_INLINE JSInlineString *
-NewShortString(JSContext *cx, JS::TwoByteChars chars)
+NewShortString(ExclusiveContext *cx, JS::TwoByteChars chars)
 {
     size_t len = chars.length();
 
@@ -90,12 +90,12 @@ NewShortString(JSContext *cx, JS::TwoByteChars chars)
 }
 
 static inline void
-StringWriteBarrierPost(JSRuntime *rt, JSString **strp)
+StringWriteBarrierPost(js::ThreadSafeContext *maybecx, JSString **strp)
 {
 }
 
 static inline void
-StringWriteBarrierPostRemove(JSRuntime *rt, JSString **strp)
+StringWriteBarrierPostRemove(js::ThreadSafeContext *maybecx, JSString **strp)
 {
 }
 
@@ -115,11 +115,6 @@ JSString::writeBarrierPre(JSString *str)
         JS_ASSERT(tmp == str);
     }
 #endif
-}
-
-inline void
-JSString::writeBarrierPost(JSString *str, void *addr)
-{
 }
 
 inline bool
@@ -146,7 +141,7 @@ JSString::readBarrier(JSString *str)
 }
 
 JS_ALWAYS_INLINE bool
-JSString::validateLength(JSContext *maybecx, size_t length)
+JSString::validateLength(js::ThreadSafeContext *maybecx, size_t length)
 {
     if (JS_UNLIKELY(length > JSString::MAX_LENGTH)) {
         js_ReportAllocationOverflow(maybecx);
@@ -157,18 +152,18 @@ JSString::validateLength(JSContext *maybecx, size_t length)
 }
 
 JS_ALWAYS_INLINE void
-JSRope::init(JSString *left, JSString *right, size_t length)
+JSRope::init(js::ThreadSafeContext *cx, JSString *left, JSString *right, size_t length)
 {
     d.lengthAndFlags = buildLengthAndFlags(length, ROPE_FLAGS);
     d.u1.left = left;
     d.s.u2.right = right;
-    js::StringWriteBarrierPost(runtime(), &d.u1.left);
-    js::StringWriteBarrierPost(runtime(), &d.s.u2.right);
+    js::StringWriteBarrierPost(cx, &d.u1.left);
+    js::StringWriteBarrierPost(cx, &d.s.u2.right);
 }
 
 template <js::AllowGC allowGC>
 JS_ALWAYS_INLINE JSRope *
-JSRope::new_(JSContext *cx,
+JSRope::new_(js::ThreadSafeContext *cx,
              typename js::MaybeRooted<JSString*, allowGC>::HandleType left,
              typename js::MaybeRooted<JSString*, allowGC>::HandleType right,
              size_t length)
@@ -178,7 +173,7 @@ JSRope::new_(JSContext *cx,
     JSRope *str = (JSRope *) js_NewGCString<allowGC>(cx);
     if (!str)
         return NULL;
-    str->init(left, right, length);
+    str->init(cx, left, right, length);
     return str;
 }
 
@@ -190,17 +185,19 @@ JSRope::markChildren(JSTracer *trc)
 }
 
 JS_ALWAYS_INLINE void
-JSDependentString::init(JSLinearString *base, const jschar *chars, size_t length)
+JSDependentString::init(js::ThreadSafeContext *cx, JSLinearString *base, const jschar *chars,
+                        size_t length)
 {
     JS_ASSERT(!js::IsPoisonedPtr(base));
     d.lengthAndFlags = buildLengthAndFlags(length, DEPENDENT_FLAGS);
     d.u1.chars = chars;
     d.s.u2.base = base;
-    js::StringWriteBarrierPost(runtime(), reinterpret_cast<JSString **>(&d.s.u2.base));
+    js::StringWriteBarrierPost(cx, reinterpret_cast<JSString **>(&d.s.u2.base));
 }
 
 JS_ALWAYS_INLINE JSLinearString *
-JSDependentString::new_(JSContext *cx, JSLinearString *baseArg, const jschar *chars, size_t length)
+JSDependentString::new_(js::ExclusiveContext *cx,
+                        JSLinearString *baseArg, const jschar *chars, size_t length)
 {
     /* Try to avoid long chains of dependent strings. */
     while (baseArg->isDependent())
@@ -232,7 +229,7 @@ JSDependentString::new_(JSContext *cx, JSLinearString *baseArg, const jschar *ch
 
     JSDependentString *str = (JSDependentString *)js_NewGCString<js::NoGC>(cx);
     if (str) {
-        str->init(baseArg, chars, length);
+        str->init(cx, baseArg, chars, length);
         return str;
     }
 
@@ -241,7 +238,7 @@ JSDependentString::new_(JSContext *cx, JSLinearString *baseArg, const jschar *ch
     str = (JSDependentString *)js_NewGCString<js::CanGC>(cx);
     if (!str)
         return NULL;
-    str->init(base, chars, length);
+    str->init(cx, base, chars, length);
     return str;
 }
 
@@ -267,13 +264,6 @@ JSFlatString::toPropertyName(JSContext *cx)
     return atom->asPropertyName();
 }
 
-JS_ALWAYS_INLINE JSAtom *
-JSFlatString::morphAtomizedStringIntoAtom()
-{
-    d.lengthAndFlags = buildLengthAndFlags(length(), ATOM_BIT);
-    return &asAtom();
-}
-
 JS_ALWAYS_INLINE void
 JSStableString::init(const jschar *chars, size_t length)
 {
@@ -283,7 +273,7 @@ JSStableString::init(const jschar *chars, size_t length)
 
 template <js::AllowGC allowGC>
 JS_ALWAYS_INLINE JSStableString *
-JSStableString::new_(JSContext *cx, const jschar *chars, size_t length)
+JSStableString::new_(js::ThreadSafeContext *cx, const jschar *chars, size_t length)
 {
     JS_ASSERT(chars[length] == jschar(0));
 
@@ -298,7 +288,7 @@ JSStableString::new_(JSContext *cx, const jschar *chars, size_t length)
 
 template <js::AllowGC allowGC>
 JS_ALWAYS_INLINE JSInlineString *
-JSInlineString::new_(JSContext *cx)
+JSInlineString::new_(js::ThreadSafeContext *cx)
 {
     return (JSInlineString *)js_NewGCString<allowGC>(cx);
 }
@@ -321,7 +311,7 @@ JSInlineString::resetLength(size_t length)
 
 template <js::AllowGC allowGC>
 JS_ALWAYS_INLINE JSShortString *
-JSShortString::new_(JSContext *cx)
+JSShortString::new_(js::ThreadSafeContext *cx)
 {
     return js_NewGCShortString<allowGC>(cx);
 }
@@ -352,51 +342,6 @@ JSExternalString::new_(JSContext *cx, const jschar *chars, size_t length,
     return str;
 }
 
-inline bool
-js::StaticStrings::fitsInSmallChar(jschar c)
-{
-    return c < SMALL_CHAR_LIMIT && toSmallChar[c] != INVALID_SMALL_CHAR;
-}
-
-inline bool
-js::StaticStrings::hasUnit(jschar c)
-{
-    return c < UNIT_STATIC_LIMIT;
-}
-
-inline JSAtom *
-js::StaticStrings::getUnit(jschar c)
-{
-    JS_ASSERT(hasUnit(c));
-    return unitStaticTable[c];
-}
-
-inline bool
-js::StaticStrings::hasUint(uint32_t u)
-{
-    return u < INT_STATIC_LIMIT;
-}
-
-inline JSAtom *
-js::StaticStrings::getUint(uint32_t u)
-{
-    JS_ASSERT(hasUint(u));
-    return intStaticTable[u];
-}
-
-inline bool
-js::StaticStrings::hasInt(int32_t i)
-{
-    return uint32_t(i) < INT_STATIC_LIMIT;
-}
-
-inline JSAtom *
-js::StaticStrings::getInt(int32_t i)
-{
-    JS_ASSERT(hasInt(i));
-    return getUint(uint32_t(i));
-}
-
 inline JSLinearString *
 js::StaticStrings::getUnitStringForElement(JSContext *cx, JSString *str, size_t index)
 {
@@ -417,50 +362,6 @@ js::StaticStrings::getLength2(jschar c1, jschar c2)
     JS_ASSERT(fitsInSmallChar(c2));
     size_t index = (((size_t)toSmallChar[c1]) << 6) + toSmallChar[c2];
     return length2StaticTable[index];
-}
-
-inline JSAtom *
-js::StaticStrings::getLength2(uint32_t i)
-{
-    JS_ASSERT(i < 100);
-    return getLength2('0' + i / 10, '0' + i % 10);
-}
-
-/* Get a static atomized string for chars if possible. */
-inline JSAtom *
-js::StaticStrings::lookup(const jschar *chars, size_t length)
-{
-    switch (length) {
-      case 1:
-        if (chars[0] < UNIT_STATIC_LIMIT)
-            return getUnit(chars[0]);
-        return NULL;
-      case 2:
-        if (fitsInSmallChar(chars[0]) && fitsInSmallChar(chars[1]))
-            return getLength2(chars[0], chars[1]);
-        return NULL;
-      case 3:
-        /*
-         * Here we know that JSString::intStringTable covers only 256 (or at least
-         * not 1000 or more) chars. We rely on order here to resolve the unit vs.
-         * int string/length-2 string atom identity issue by giving priority to unit
-         * strings for "0" through "9" and length-2 strings for "10" through "99".
-         */
-        JS_STATIC_ASSERT(INT_STATIC_LIMIT <= 999);
-        if ('1' <= chars[0] && chars[0] <= '9' &&
-            '0' <= chars[1] && chars[1] <= '9' &&
-            '0' <= chars[2] && chars[2] <= '9') {
-            int i = (chars[0] - '0') * 100 +
-                      (chars[1] - '0') * 10 +
-                      (chars[2] - '0');
-
-            if (unsigned(i) < INT_STATIC_LIMIT)
-                return getInt(i);
-        }
-        return NULL;
-    }
-
-    return NULL;
 }
 
 JS_ALWAYS_INLINE void
@@ -510,4 +411,4 @@ JSExternalString::finalize(js::FreeOp *fop)
     fin->finalize(fin, const_cast<jschar *>(chars()));
 }
 
-#endif
+#endif /* vm_String_inl_h */

@@ -4,6 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// HttpLog.h should generally be included first
+#include "HttpLog.h"
+
 #include "nsHttp.h"
 #include "nsHttpChannel.h"
 #include "nsHttpHandler.h"
@@ -16,6 +19,7 @@
 #include "nsIStreamListenerTee.h"
 #include "nsISeekableStream.h"
 #include "nsILoadGroupChild.h"
+#include "nsIProtocolProxyService2.h"
 #include "nsMimeTypes.h"
 #include "nsNetUtil.h"
 #include "prprf.h"
@@ -33,10 +37,19 @@
 #include "nsAlgorithm.h"
 #include "GeckoProfiler.h"
 #include "nsIConsoleService.h"
-#include "base/compiler_specific.h"
 #include "NullHttpTransaction.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/VisualEventTracer.h"
+#include "nsISSLSocketControl.h"
+#include "sslt.h"
+#include "nsContentUtils.h"
+#include "nsIPermissionManager.h"
+#include "nsIPrincipal.h"
+#include "nsISecurityConsoleMessage.h"
+#include "nsIScriptSecurityManager.h"
+#include "nsISSLStatus.h"
+#include "nsISSLStatusProvider.h"
+#include "nsIDOMWindow.h"
 
 namespace mozilla { namespace net {
 
@@ -249,10 +262,10 @@ private:
     const uint32_t mLoadFlags;
     const bool mCacheForOfflineUse;
     const bool mFallbackChannel;
-    const InfallableCopyCString mClientID;
+    const nsCString mClientID;
     const nsCacheStoragePolicy mStoragePolicy;
     const bool mUsingPrivateBrowsing;
-    const InfallableCopyCString mCacheKey;
+    const nsCString mCacheKey;
     const nsCacheAccessMode mAccessToRequest;
     const bool mNoWait;
     const bool mUsingSSL;
@@ -286,7 +299,7 @@ NS_IMPL_ISUPPORTS_INHERITED1(HttpCacheQuery, nsRunnable, nsICacheListener)
 //-----------------------------------------------------------------------------
 
 nsHttpChannel::nsHttpChannel()
-    : ALLOW_THIS_IN_INITIALIZER_LIST(HttpAsyncAborter<nsHttpChannel>(this))
+    : HttpAsyncAborter<nsHttpChannel>(MOZ_THIS_IN_INITIALIZER_LIST())
     , mLogicalOffset(0)
     , mCacheAccess(0)
     , mCacheEntryDeviceTelemetryID(UNKNOWN_DEVICE)
@@ -388,6 +401,7 @@ nsHttpChannel::Connect()
         return NS_ERROR_UNKNOWN_HOST;
 
     // Consider opening a TCP connection right away
+    RetrieveSSLOptions();
     SpeculativeConnect();
 
     // Don't allow resuming when cache must be used
@@ -524,8 +538,9 @@ nsHttpChannel::SpeculativeConnect()
 
     mConnectionInfo->SetAnonymous((mLoadFlags & LOAD_ANONYMOUS) != 0);
     mConnectionInfo->SetPrivate(mPrivateBrowsing);
-    gHttpHandler->SpeculativeConnect(mConnectionInfo,
-                                     callbacks);
+    gHttpHandler->SpeculativeConnect(
+        mConnectionInfo, callbacks,
+        mCaps & (NS_HTTP_ALLOW_RSA_FALSESTART | NS_HTTP_ALLOW_RC4_FALSESTART | NS_HTTP_DISALLOW_SPDY));
 }
 
 void
@@ -688,6 +703,37 @@ nsHttpChannel::SetupTransactionLoadGroupInfo()
     rootLoadGroup->GetConnectionInfo(getter_AddRefs(ci));
     if (ci)
         mTransaction->SetLoadGroupConnectionInfo(ci);
+}
+
+void
+nsHttpChannel::RetrieveSSLOptions()
+{
+    if (!IsHTTPS() || mPrivateBrowsing)
+        return;
+
+    nsIPrincipal *principal = GetPrincipal();
+    if (!principal)
+        return;
+
+    nsCOMPtr<nsIPermissionManager> permMgr =
+        do_GetService(NS_PERMISSIONMANAGER_CONTRACTID);
+    if (!permMgr)
+        return;
+
+    uint32_t perm;
+    nsresult rv = permMgr->TestPermissionFromPrincipal(principal,
+                                                       "falsestart-rsa", &perm);
+    if (NS_SUCCEEDED(rv) && perm == nsIPermissionManager::ALLOW_ACTION) {
+        LOG(("nsHttpChannel::RetrieveSSLOptions [this=%p] "
+             "falsestart-rsa permission found\n", this));
+        mCaps |= NS_HTTP_ALLOW_RSA_FALSESTART;
+    }
+    rv = permMgr->TestPermissionFromPrincipal(principal, "falsestart-rc4", &perm);
+    if (NS_SUCCEEDED(rv) && perm == nsIPermissionManager::ALLOW_ACTION) {
+        LOG(("nsHttpChannel::RetrieveSSLOptions [this=%p] "
+             "falsestart-rc4 permission found\n", this));
+        mCaps |= NS_HTTP_ALLOW_RC4_FALSESTART;
+    }
 }
 
 nsresult
@@ -1150,11 +1196,95 @@ nsHttpChannel::ProcessSTSHeader()
 
     rv = stss->ProcessStsHeader(mURI, stsHeader.get(), flags, NULL, NULL);
     if (NS_FAILED(rv)) {
+        AddSecurityMessage(NS_LITERAL_STRING("InvalidSTSHeaders"),
+                NS_LITERAL_STRING("Invalid HSTS Headers"));
         LOG(("STS: Failed to parse STS header, continuing load.\n"));
-        return NS_OK;
     }
 
     return NS_OK;
+}
+
+bool
+nsHttpChannel::IsHTTPS()
+{
+    bool isHttps;
+    if (NS_FAILED(mURI->SchemeIs("https", &isHttps)) || !isHttps)
+        return false;
+    return true;
+}
+
+void
+nsHttpChannel::ProcessSSLInformation()
+{
+    // If this is HTTPS, record any use of RSA so that Key Exchange Algorithm
+    // can be whitelisted for TLS False Start in future sessions. We could
+    // do the same for DH but its rarity doesn't justify the lookup.
+    // Also do the same for RC4 symmetric ciphers.
+
+    if (mCanceled || NS_FAILED(mStatus) || !mSecurityInfo ||
+        !IsHTTPS() || mPrivateBrowsing)
+        return;
+
+    nsCOMPtr<nsISSLSocketControl> ssl = do_QueryInterface(mSecurityInfo);
+    nsCOMPtr<nsISSLStatusProvider> statusProvider =
+        do_QueryInterface(mSecurityInfo);
+    if (!ssl || !statusProvider)
+        return;
+    nsCOMPtr<nsISSLStatus> sslstat;
+    statusProvider->GetSSLStatus(getter_AddRefs(sslstat));
+    if (!sslstat)
+        return;
+
+    // If certificate exceptions are being used don't record this information
+    // in the permission manager.
+    bool trustCheck;
+    if (NS_FAILED(sslstat->GetIsDomainMismatch(&trustCheck)) || trustCheck)
+        return;
+    if (NS_FAILED(sslstat->GetIsNotValidAtThisTime(&trustCheck)) || trustCheck)
+        return;
+    if (NS_FAILED(sslstat->GetIsUntrusted(&trustCheck)) || trustCheck)
+        return;
+
+    int16_t kea = ssl->GetKEAUsed();
+    int16_t symcipher = ssl->GetSymmetricCipherUsed();
+
+    nsIPrincipal *principal = GetPrincipal();
+    if (!principal)
+        return;
+
+    // set a permission manager flag that future transactions can
+    // use via RetrieveSSLOptions(()
+
+    nsCOMPtr<nsIPermissionManager> permMgr =
+        do_GetService(NS_PERMISSIONMANAGER_CONTRACTID);
+    if (!permMgr)
+        return;
+
+    // Allow this to stand for a week
+    int64_t expireTime = (PR_Now() / PR_USEC_PER_MSEC) +
+        (86400 * 7 * PR_MSEC_PER_SEC);
+
+    if (kea == ssl_kea_rsa) {
+        permMgr->AddFromPrincipal(principal, "falsestart-rsa",
+                                  nsIPermissionManager::ALLOW_ACTION,
+                                  nsIPermissionManager::EXPIRE_TIME,
+                                  expireTime);
+        LOG(("nsHttpChannel::ProcessSSLInformation [this=%p] "
+             "falsestart-rsa permission granted for this host\n", this));
+    } else {
+        permMgr->RemoveFromPrincipal(principal, "falsestart-rsa");
+    }
+
+    if (symcipher == ssl_calg_rc4) {
+        permMgr->AddFromPrincipal(principal, "falsestart-rc4",
+                                  nsIPermissionManager::ALLOW_ACTION,
+                                  nsIPermissionManager::EXPIRE_TIME,
+                                  expireTime);
+        LOG(("nsHttpChannel::ProcessSSLInformation [this=%p] "
+             "falsestart-rc4 permission granted for this host\n", this));
+    } else {
+        permMgr->RemoveFromPrincipal(principal, "falsestart-rc4");
+    }
 }
 
 nsresult
@@ -1188,6 +1318,8 @@ nsHttpChannel::ProcessResponse()
     }
 
     MOZ_ASSERT(!mCachedContentIsValid);
+
+    ProcessSSLInformation();
 
     // notify "http-on-examine-response" observers
     gHttpHandler->OnExamineResponse(this);
@@ -1773,8 +1905,19 @@ nsHttpChannel::ResolveProxy()
     if (NS_FAILED(rv))
         return rv;
 
-    return pps->AsyncResolve(mProxyURI ? mProxyURI : mURI, mProxyResolveFlags,
-                             this, getter_AddRefs(mProxyRequest));
+    // using the nsIProtocolProxyService2 allows a minor performance
+    // optimization, but if an add-on has only provided the original interface
+    // then it is ok to use that version.
+    nsCOMPtr<nsIProtocolProxyService2> pps2 = do_QueryInterface(pps);
+    if (pps2) {
+        rv = pps2->AsyncResolve2(mProxyURI ? mProxyURI : mURI, mProxyResolveFlags,
+                                 this, getter_AddRefs(mProxyRequest));
+    } else {
+        rv = pps->AsyncResolve(mProxyURI ? mProxyURI : mURI, mProxyResolveFlags,
+                               this, getter_AddRefs(mProxyRequest));
+    }
+
+    return rv;
 }
 
 bool
@@ -2235,12 +2378,12 @@ nsHttpChannel::ProcessFallback(bool *waitingForRedirectCallback)
     // fallback.
     if (mOfflineCacheEntry) {
         mOfflineCacheEntry->AsyncDoom(nullptr);
-        mOfflineCacheEntry = 0;
+        mOfflineCacheEntry = nullptr;
         mOfflineCacheAccess = 0;
     }
 
     mApplicationCacheForWrite = nullptr;
-    mOfflineCacheEntry = 0;
+    mOfflineCacheEntry = nullptr;
     mOfflineCacheAccess = 0;
 
     // Close the current cache entry.
@@ -2406,6 +2549,12 @@ nsHttpChannel::OpenCacheEntry(bool usingSSL)
                 (cacheKey, loadContext, getter_AddRefs(mApplicationCache));
             NS_ENSURE_SUCCESS(rv, rv);
         }
+    }
+
+    if (mLoadFlags & LOAD_INITIAL_DOCUMENT_URI) {
+        mozilla::Telemetry::Accumulate(
+            Telemetry::HTTP_OFFLINE_CACHE_DOCUMENT_LOAD,
+            !!mApplicationCache);
     }
 
     nsCOMPtr<nsICacheSession> session;
@@ -2902,7 +3051,7 @@ HttpCacheQuery::OnCacheEntryAvailable(nsICacheEntryDescriptor *entry,
                 mCacheEntryDeviceTelemetryID
                     = Telemetry::HTTP_OFFLINE_CACHE_DISPOSITION_2;
             } else {
-                MOZ_NOT_REACHED("unknown cache device ID");
+                MOZ_CRASH("unknown cache device ID");
             }
 
             delete cacheDeviceID;
@@ -3564,8 +3713,8 @@ nsHttpChannel::CloseCacheEntry(bool doomOnFailure)
 
     mCachedResponseHead = nullptr;
 
-    mCachePump = 0;
-    mCacheEntry = 0;
+    mCachePump = nullptr;
+    mCacheEntry = nullptr;
     mCacheAccess = 0;
     mInitedCacheEntry = false;
 }
@@ -3588,7 +3737,7 @@ nsHttpChannel::CloseOfflineCacheEntry()
             mOfflineCacheEntry->AsyncDoom(nullptr);
     }
 
-    mOfflineCacheEntry = 0;
+    mOfflineCacheEntry = nullptr;
     mOfflineCacheAccess = 0;
 }
 
@@ -4946,42 +5095,6 @@ nsHttpChannel::ContinueOnStartRequest3(nsresult result)
     return CallOnStartRequest();
 }
 
-class OnStopRequestCleanupEvent : public nsRunnable
-{
-public:
-    OnStopRequestCleanupEvent(nsHttpChannel *aHttpChannel,
-                              nsresult aStatus)
-    : mHttpChannel(aHttpChannel)
-    , mStatus(aStatus)
-    {
-        MOZ_ASSERT(!NS_IsMainThread(), "Shouldn't be created on main thread");
-        NS_ASSERTION(aHttpChannel, "aHttpChannel should not be null");
-    }
-
-    NS_IMETHOD Run()
-    {
-        MOZ_ASSERT(NS_IsMainThread(), "Should run on main thread");
-        if (mHttpChannel) {
-            mHttpChannel->OnStopRequestCleanup(mStatus);
-        }
-        return NS_OK;
-    }
-private:
-    nsRefPtr<nsHttpChannel> mHttpChannel;
-    nsresult mStatus;
-};
-
-nsresult
-nsHttpChannel::OnStopRequestCleanup(nsresult aStatus)
-{
-    NS_ASSERTION(NS_IsMainThread(), "Should be on main thread");
-    if (mLoadGroup) {
-        mLoadGroup->RemoveRequest(this, nullptr, aStatus);
-    }
-    ReleaseListeners();
-    return NS_OK;
-}
-
 NS_IMETHODIMP
 nsHttpChannel::OnStopRequest(nsIRequest *request, nsISupports *ctxt, nsresult status)
 {
@@ -5051,7 +5164,7 @@ nsHttpChannel::OnStopRequest(nsIRequest *request, nsISupports *ctxt, nsresult st
         // at this point, we're done with the transaction
         mTransactionTimings = mTransaction->Timings();
         mTransaction = nullptr;
-        mTransactionPump = 0;
+        mTransactionPump = nullptr;
 
         // We no longer need the dns prefetch object
         if (mDNSPrefetch && mDNSPrefetch->TimingsValid()) {
@@ -5111,16 +5224,13 @@ nsHttpChannel::OnStopRequest(nsIRequest *request, nsISupports *ctxt, nsresult st
     if (mOfflineCacheEntry)
         CloseOfflineCacheEntry();
 
-    if (NS_IsMainThread()) {
-        OnStopRequestCleanup(status);
-    } else {
-        nsresult rv = NS_DispatchToMainThread(
-            new OnStopRequestCleanupEvent(this, status));
-        NS_ENSURE_SUCCESS(rv, rv);
-    }
+    if (mLoadGroup)
+        mLoadGroup->RemoveRequest(this, nullptr, status);
 
     // We don't need this info anymore
     CleanRedirectCacheChainIfNecessary();
+
+    ReleaseListeners();
 
     return NS_OK;
 }
@@ -5257,17 +5367,13 @@ nsHttpChannel::RetargetDeliveryTo(nsIEventTarget* aNewTarget)
     nsCOMPtr<nsIThreadRetargetableRequest> retargetableCachePump;
     nsCOMPtr<nsIThreadRetargetableRequest> retargetableTransactionPump;
     if (mCachePump) {
-        // Direct call to QueryInterface to avoid multiple inheritance issues.
-        rv = mCachePump->QueryInterface(NS_GET_IID(nsIThreadRetargetableRequest),
-                                        getter_AddRefs(retargetableCachePump));
+        retargetableCachePump = do_QueryObject(mCachePump);
         // nsInputStreamPump should implement this interface.
         MOZ_ASSERT(retargetableCachePump);
         rv = retargetableCachePump->RetargetDeliveryTo(aNewTarget);
     }
     if (NS_SUCCEEDED(rv) && mTransactionPump) {
-        // Direct call to QueryInterface to avoid multiple inheritance issues.
-        rv = mTransactionPump->QueryInterface(NS_GET_IID(nsIThreadRetargetableRequest),
-                                              getter_AddRefs(retargetableTransactionPump));
+        retargetableTransactionPump = do_QueryObject(mTransactionPump);
         // nsInputStreamPump should implement this interface.
         MOZ_ASSERT(retargetableTransactionPump);
         rv = retargetableTransactionPump->RetargetDeliveryTo(aNewTarget);
@@ -5308,6 +5414,7 @@ NS_IMETHODIMP
 nsHttpChannel::OnTransportStatus(nsITransport *trans, nsresult status,
                                  uint64_t progress, uint64_t progressMax)
 {
+    MOZ_ASSERT(NS_IsMainThread(), "Should be on main thread only");
     // cache the progress sink so we don't have to query for it each time.
     if (!mProgressSink)
         GetCallback(mProgressSink);
@@ -5334,7 +5441,13 @@ nsHttpChannel::OnTransportStatus(nsITransport *trans, nsresult status,
 
         if (progress > 0) {
             MOZ_ASSERT(progress <= progressMax, "unexpected progress values");
-            mProgressSink->OnProgress(this, nullptr, progress, progressMax);
+            // Try to get mProgressSink if it was nulled out during OnStatus.
+            if (!mProgressSink) {
+                GetCallback(mProgressSink);
+            }
+            if (mProgressSink) {
+                mProgressSink->OnProgress(this, nullptr, progress, progressMax);
+            }
         }
     }
 #ifdef DEBUG
@@ -6166,6 +6279,30 @@ nsHttpChannel::ShouldSkipCache()
     gHttpHandler->SetCacheSkippedUntil(cacheSkippedUntil);
     return true;
 }
+
+nsIPrincipal *
+nsHttpChannel::GetPrincipal()
+{
+    if (mPrincipal)
+        return mPrincipal;
+
+    nsIScriptSecurityManager *securityManager =
+        nsContentUtils::GetSecurityManager();
+
+    if (!securityManager)
+        return nullptr;
+
+    securityManager->GetChannelPrincipal(this, getter_AddRefs(mPrincipal));
+    if (!mPrincipal)
+        return nullptr;
+
+    // principals with unknown app ids do not work with the permission manager
+    if (mPrincipal->GetUnknownAppId())
+        mPrincipal = nullptr;
+
+    return mPrincipal;
+}
+
 
 NS_IMETHODIMP
 nsHttpChannel::SetLoadGroup(nsILoadGroup *aLoadGroup)

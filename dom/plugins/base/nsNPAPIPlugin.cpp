@@ -8,6 +8,7 @@
 /* This must occur *after* layers/PLayerTransaction.h to avoid typedefs conflicts. */
 #include "mozilla/Util.h"
 
+#include "pratom.h"
 #include "prmem.h"
 #include "prenv.h"
 #include "prclist.h"
@@ -644,7 +645,7 @@ GetDocumentFromNPP(NPP npp)
 static JSContext *
 GetJSContextFromDoc(nsIDocument *doc)
 {
-  nsIScriptGlobalObject *sgo = doc->GetScriptGlobalObject();
+  nsCOMPtr<nsIScriptGlobalObject> sgo = do_QueryInterface(doc->GetWindow());
   NS_ENSURE_TRUE(sgo, nullptr);
 
   nsIScriptContext *scx = sgo->GetContext();

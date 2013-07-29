@@ -7,6 +7,7 @@
 TEST_DIRS += ['test']
 
 XPIDL_SOURCES += [
+    'amIAddonManager.idl',
     'amIInstallTrigger.idl',
     'amIWebInstallListener.idl',
     'amIWebInstaller.idl',
@@ -19,3 +20,21 @@ EXTRA_COMPONENTS += [
     'amContentHandler.js',
     'amWebInstallListener.js',
 ]
+
+EXTRA_PP_COMPONENTS += [
+    'extensions.manifest',
+    'nsBlocklistService.js',
+]
+
+EXTRA_JS_MODULES += [
+    'AddonLogging.jsm',
+    'AddonRepository.jsm',
+    'AddonUpdateChecker.jsm',
+    'ChromeManifestParser.jsm',
+    'DeferredSave.jsm',
+    'LightweightThemeImageOptimizer.jsm',
+    'LightweightThemeManager.jsm',
+    'PluginProvider.jsm',
+    'SpellCheckDictionaryBootstrap.js',
+]
+

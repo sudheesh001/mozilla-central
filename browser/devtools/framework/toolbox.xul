@@ -23,6 +23,14 @@
          key="&toolboxOptionsButton.key;"
          oncommand="void(0);"
          modifiers="shift, accel"/>
+    <key id="toolbox-next-tool-key"
+         key="&toolboxNextTool.key;"
+         oncommand="void(0);"
+         modifiers="accel"/>
+    <key id="toolbox-previous-tool-key"
+         key="&toolboxPreviousTool.key;"
+         oncommand="void(0);"
+         modifiers="accel"/>
   </keyset>
 
   <notificationbox id="toolbox-notificationbox" flex="1">
@@ -30,6 +38,7 @@
 #ifdef XP_MACOSX
       <hbox id="toolbox-controls">
         <toolbarbutton id="toolbox-close"
+                       class="devtools-closebutton"
                        tooltiptext="&toolboxCloseButton.tooltip;"/>
         <hbox id="toolbox-dock-buttons"/>
       </hbox>
@@ -42,6 +51,7 @@
       <hbox id="toolbox-controls">
         <hbox id="toolbox-dock-buttons"/>
         <toolbarbutton id="toolbox-close"
+                       class="devtools-closebutton"
                        tooltiptext="&toolboxCloseButton.tooltip;"/>
       </hbox>
 #endif

@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "base/basictypes.h"
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/Util.h"
 
 #include "nsLayoutUtils.h"
@@ -307,21 +308,6 @@ nsLayoutUtils::GetMaximumAnimatedScale(nsIContent* aContent)
 }
 
 bool
-nsLayoutUtils::Are3DTransformsEnabled()
-{
-  static bool s3DTransformsEnabled;
-  static bool s3DTransformPrefCached = false;
-
-  if (!s3DTransformPrefCached) {
-    s3DTransformPrefCached = true;
-    Preferences::AddBoolVarCache(&s3DTransformsEnabled,
-                                 "layout.3d-transforms.enabled");
-  }
-
-  return s3DTransformsEnabled;
-}
-
-bool
 nsLayoutUtils::AreAsyncAnimationsEnabled()
 {
   static bool sAreAsyncAnimationsEnabled;
@@ -396,6 +382,22 @@ nsLayoutUtils::AnimatedImageLayersEnabled()
   }
 
   return sAnimatedImageLayersEnabled;
+}
+
+bool
+nsLayoutUtils::CSSFiltersEnabled()
+{
+  static bool sCSSFiltersEnabled;
+  static bool sCSSFiltersPrefCached = false;
+
+  if (!sCSSFiltersPrefCached) {
+    sCSSFiltersPrefCached = true;
+    Preferences::AddBoolVarCache(&sCSSFiltersEnabled,
+                                 "layout.css.filters.enabled",
+                                 false);
+  }
+
+  return sCSSFiltersEnabled;
 }
 
 void
@@ -725,6 +727,17 @@ nsLayoutUtils::GetStyleFrame(nsIFrame* aFrame)
   }
 
   return aFrame;
+}
+
+nsIFrame*
+nsLayoutUtils::GetStyleFrame(const nsIContent* aContent)
+{
+  nsIFrame *frame = aContent->GetPrimaryFrame();
+  if (!frame) {
+    return nullptr;
+  }
+
+  return nsLayoutUtils::GetStyleFrame(frame);
 }
 
 nsIFrame*
@@ -2559,6 +2572,15 @@ GetPercentHeight(const nsStyleCoord& aStyle,
   if (!f) {
     NS_NOTREACHED("top of frame tree not a containing block");
     return false;
+  }
+
+  // During reflow, nsHTMLScrollFrame::ReflowScrolledFrame uses
+  // SetComputedHeight on the reflow state for its child to propagate its
+  // computed height to the scrolled content. So here we skip to the scroll
+  // frame that contains this scrolled content in order to get the same
+  // behavior as layout when computing percentage heights.
+  if (f->StyleContext()->GetPseudo() == nsCSSAnonBoxes::scrolledContent) {
+    f = f->GetParent();
   }
 
   const nsStylePosition *pos = f->StylePosition();
@@ -4892,7 +4914,7 @@ nsLayoutUtils::GetFontFacesForText(nsIFrame* aFrame,
 /* static */
 size_t
 nsLayoutUtils::SizeOfTextRunsForFrames(nsIFrame* aFrame,
-                                       nsMallocSizeOfFun aMallocSizeOf,
+                                       MallocSizeOf aMallocSizeOf,
                                        bool clear)
 {
   NS_PRECONDITION(aFrame, "NULL frame pointer");
@@ -5070,7 +5092,7 @@ nsLayoutUtils::PostRestyleEvent(Element* aElement,
   if (doc) {
     nsCOMPtr<nsIPresShell> presShell = doc->GetShell();
     if (presShell) {
-      presShell->FrameConstructor()->PostRestyleEvent(
+      presShell->GetPresContext()->RestyleManager()->PostRestyleEvent(
         aElement, aRestyleHint, aMinChangeHint);
     }
   }

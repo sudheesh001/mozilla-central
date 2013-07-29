@@ -26,6 +26,8 @@
 #include "nsViewportFrame.h"
 #include "RenderFrameParent.h"
 #include "mozilla/layers/LayerManagerComposite.h"
+#include "mozilla/layers/CompositorChild.h"
+#include "ClientLayerManager.h"
 
 typedef nsContentView::ViewConfig ViewConfig;
 using namespace mozilla::dom;
@@ -48,8 +50,8 @@ struct ViewTransform {
   operator gfx3DMatrix() const
   {
     return
-      gfx3DMatrix::ScalingMatrix(mXScale, mYScale, 1) *
-      gfx3DMatrix::Translation(mTranslation.x, mTranslation.y, 0);
+      gfx3DMatrix::Translation(mTranslation.x, mTranslation.y, 0) *
+      gfx3DMatrix::ScalingMatrix(mXScale, mYScale, 1);
   }
 
   nsIntPoint mTranslation;
@@ -167,10 +169,7 @@ ComputeShadowTreeTransform(nsIFrame* aContainerFrame,
   nscoord auPerDevPixel = aContainerFrame->PresContext()->AppUnitsPerDevPixel();
   nsIntPoint scrollOffset =
     aConfig.mScrollOffset.ToNearestPixels(auPerDevPixel);
-  // metricsScrollOffset is in layer coordinates.
-  gfxPoint metricsScrollOffset = aMetrics->GetScrollOffsetInLayerPixels();
-  nsIntPoint roundedMetricsScrollOffset =
-    nsIntPoint(NS_lround(metricsScrollOffset.x), NS_lround(metricsScrollOffset.y));
+  LayerIntPoint metricsScrollOffset = RoundedToInt(aMetrics->GetScrollOffsetInLayerPixels());
 
   if (aRootFrameLoader->AsyncScrollEnabled() && !aMetrics->mDisplayPort.IsEmpty()) {
     // Only use asynchronous scrolling if it is enabled and there is a
@@ -178,8 +177,8 @@ ComputeShadowTreeTransform(nsIFrame* aContainerFrame,
     // synchronously scrolled for identifying a scroll area before it is
     // being actively scrolled.
     nsIntPoint scrollCompensation(
-      (scrollOffset.x / aTempScaleX - roundedMetricsScrollOffset.x) * aConfig.mXScale,
-      (scrollOffset.y / aTempScaleY - roundedMetricsScrollOffset.y) * aConfig.mYScale);
+      (scrollOffset.x / aTempScaleX - metricsScrollOffset.x),
+      (scrollOffset.y / aTempScaleY - metricsScrollOffset.y));
 
     return ViewTransform(-scrollCompensation, aConfig.mXScale, aConfig.mYScale);
   } else {
@@ -297,8 +296,8 @@ TransformShadowTree(nsDisplayListBuilder* aBuilder, nsFrameLoader* aFrameLoader,
     // Alter the shadow transform of fixed position layers in the situation
     // that the view transform's scroll position doesn't match the actual
     // scroll position, due to asynchronous layer scrolling.
-    float offsetX = layerTransform.mTranslation.x / layerTransform.mXScale;
-    float offsetY = layerTransform.mTranslation.y / layerTransform.mYScale;
+    float offsetX = layerTransform.mTranslation.x;
+    float offsetY = layerTransform.mTranslation.y;
     ReverseTranslate(shadowTransform, gfxPoint(offsetX, offsetY));
     const nsIntRect* clipRect = shadow->GetShadowClipRect();
     if (clipRect) {
@@ -371,7 +370,7 @@ BuildViewMap(ViewMap& oldContentViews, ViewMap& newContentViews,
   if (metrics.IsScrollable()) {
     nscoord auPerDevPixel = aFrameLoader->GetPrimaryFrameOfOwningContent()
                                         ->PresContext()->AppUnitsPerDevPixel();
-    nscoord auPerCSSPixel = auPerDevPixel * metrics.mDevPixelsPerCSSPixel;
+    nscoord auPerCSSPixel = auPerDevPixel * metrics.mDevPixelsPerCSSPixel.scale;
     nsContentView* view = FindViewForId(oldContentViews, scrollId);
     if (view) {
       // View already exists. Be sure to propagate scales for any values
@@ -431,7 +430,7 @@ BuildViewMap(ViewMap& oldContentViews, ViewMap& newContentViews,
 
 static void
 BuildBackgroundPatternFor(ContainerLayer* aContainer,
-                          ContainerLayer* aShadowRoot,
+                          Layer* aShadowRoot,
                           const ViewConfig& aConfig,
                           const gfxRGBA& aColor,
                           LayerManager* aManager,
@@ -605,7 +604,7 @@ RenderFrameParent::RenderFrameParent(nsFrameLoader* aFrameLoader,
 
   nsRefPtr<LayerManager> lm = GetFrom(mFrameLoader);
   // Perhaps the document containing this frame currently has no presentation?
-  if (lm && lm->AsLayerManagerComposite()) {
+  if (lm && lm->GetBackendType() == LAYERS_CLIENT) {
     *aTextureFactoryIdentifier = lm->GetTextureFactoryIdentifier();
   } else {
     *aTextureFactoryIdentifier = TextureFactoryIdentifier();
@@ -615,6 +614,10 @@ RenderFrameParent::RenderFrameParent(nsFrameLoader* aFrameLoader,
     // Our remote frame will push layers updates to the compositor,
     // and we'll keep an indirect reference to that tree.
     *aId = mLayersId = CompositorParent::AllocateLayerTreeId();
+    if (lm && lm->GetBackendType() == LAYERS_CLIENT) {
+      ClientLayerManager *clientManager = static_cast<ClientLayerManager*>(lm.get());
+      clientManager->GetRemoteRenderer()->SendNotifyChildCreated(mLayersId);
+    }
     if (aScrollingBehavior == ASYNC_PAN_ZOOM) {
       mContentController = new RemoteContentController(this);
       mPanZoomController = new AsyncPanZoomController(
@@ -736,7 +739,7 @@ RenderFrameParent::BuildLayer(nsDisplayListBuilder* aBuilder,
     mContainer->SetInheritedScale(1.0f, 1.0f);
   }
 
-  ContainerLayer* shadowRoot = GetRootLayer();
+  Layer* shadowRoot = GetRootLayer();
   if (!shadowRoot) {
     mContainer = nullptr;
     return nullptr;
@@ -790,12 +793,11 @@ RenderFrameParent::NotifyInputEvent(const nsInputEvent& aEvent,
 }
 
 void
-RenderFrameParent::NotifyDimensionsChanged(int width, int height)
+RenderFrameParent::NotifyDimensionsChanged(ScreenIntSize size)
 {
   if (mPanZoomController) {
-    // I don't know what units width/height are in, hence FromUnknownRect
     mPanZoomController->UpdateCompositionBounds(
-      LayerIntRect::FromUnknownRect(gfx::IntRect(0, 0, width, height)));
+      ScreenIntRect(ScreenIntPoint(), size));
   }
 }
 
@@ -850,7 +852,7 @@ RenderFrameParent::RecvDetectScrollableSubframe()
 }
 
 PLayerTransactionParent*
-RenderFrameParent::AllocPLayerTransaction()
+RenderFrameParent::AllocPLayerTransactionParent()
 {
   if (!mFrameLoader || mFrameLoaderDestroyed) {
     return nullptr;
@@ -860,7 +862,7 @@ RenderFrameParent::AllocPLayerTransaction()
 }
 
 bool
-RenderFrameParent::DeallocPLayerTransaction(PLayerTransactionParent* aLayers)
+RenderFrameParent::DeallocPLayerTransactionParent(PLayerTransactionParent* aLayers)
 {
   delete aLayers;
   return true;
@@ -934,7 +936,7 @@ RenderFrameParent::GetLayerTreeId() const
   return mLayersId;
 }
 
-ContainerLayer*
+Layer*
 RenderFrameParent::GetRootLayer() const
 {
   LayerTransactionParent* shadowLayers = GetShadowLayers();
@@ -955,10 +957,10 @@ RenderFrameParent::BuildDisplayList(nsDisplayListBuilder* aBuilder,
   nsRect bounds = aFrame->EnsureInnerView()->GetBounds() + offset;
   clipState.ClipContentDescendants(bounds);
 
-  ContainerLayer* container = GetRootLayer();
+  Layer* container = GetRootLayer();
   if (aBuilder->IsForEventDelivery() && container) {
     ViewTransform offset =
-      ViewTransform(GetContentRectLayerOffset(aFrame, aBuilder), 1, 1);
+      ViewTransform(GetContentRectLayerOffset(aFrame, aBuilder));
     BuildListForLayer(container, mFrameLoader, offset,
                       aBuilder, *aLists.Content(), aFrame);
   } else {
@@ -968,7 +970,7 @@ RenderFrameParent::BuildDisplayList(nsDisplayListBuilder* aBuilder,
 }
 
 void
-RenderFrameParent::ZoomToRect(const gfxRect& aRect)
+RenderFrameParent::ZoomToRect(const CSSRect& aRect)
 {
   if (mPanZoomController) {
     mPanZoomController->ZoomToRect(aRect);

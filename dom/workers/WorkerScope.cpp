@@ -18,6 +18,8 @@
 #include "mozilla/dom/XMLHttpRequestBinding.h"
 #include "mozilla/dom/XMLHttpRequestUploadBinding.h"
 #include "mozilla/dom/URLBinding.h"
+#include "mozilla/dom/WorkerLocationBinding.h"
+#include "mozilla/dom/WorkerNavigatorBinding.h"
 #include "mozilla/OSFileConstants.h"
 #include "nsTraceRefcnt.h"
 #include "xpcpublic.h"
@@ -77,7 +79,7 @@ class WorkerGlobalScope : public workers::EventTarget
   };
 
   // Must be traced!
-  jsval mSlots[SLOT_COUNT];
+  JS::Heap<JS::Value> mSlots[SLOT_COUNT];
 
   enum
   {
@@ -128,7 +130,7 @@ protected:
   _trace(JSTracer* aTrc) MOZ_OVERRIDE
   {
     for (int32_t i = 0; i < SLOT_COUNT; i++) {
-      JS_CallValueTracer(aTrc, &mSlots[i], "WorkerGlobalScope instance slot");
+      JS_CallHeapValueTracer(aTrc, &mSlots[i], "WorkerGlobalScope instance slot");
     }
     mWorker->TraceInternal(aTrc);
     EventTarget::_trace(aTrc);
@@ -142,7 +144,8 @@ protected:
 
 private:
   static JSBool
-  GetEventListener(JSContext* aCx, JSHandleObject aObj, JSHandleId aIdval, JSMutableHandleValue aVp)
+  GetEventListener(JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aIdval,
+                   JS::MutableHandle<JS::Value> aVp)
   {
     JS_ASSERT(JSID_IS_INT(aIdval));
     JS_ASSERT(JSID_TO_INT(aIdval) >= 0 && JSID_TO_INT(aIdval) < STRING_COUNT);
@@ -168,8 +171,8 @@ private:
   }
 
   static JSBool
-  SetEventListener(JSContext* aCx, JSHandleObject aObj, JSHandleId aIdval, JSBool aStrict,
-                   JSMutableHandleValue aVp)
+  SetEventListener(JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aIdval,
+                   JSBool aStrict, JS::MutableHandle<JS::Value> aVp)
   {
     JS_ASSERT(JSID_IS_INT(aIdval));
     JS_ASSERT(JSID_TO_INT(aIdval) >= 0 && JSID_TO_INT(aIdval) < STRING_COUNT);
@@ -209,7 +212,8 @@ private:
   }
 
   static JSBool
-  GetSelf(JSContext* aCx, JSHandleObject aObj, JSHandleId aIdval, JSMutableHandleValue aVp)
+  GetSelf(JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aIdval,
+          JS::MutableHandle<JS::Value> aVp)
   {
     if (!GetInstancePrivate(aCx, aObj, "self")) {
       return false;
@@ -220,7 +224,8 @@ private:
   }
 
   static JSBool
-  GetLocation(JSContext* aCx, JSHandleObject aObj, JSHandleId aIdval, JSMutableHandleValue aVp)
+  GetLocation(JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aIdval,
+              JS::MutableHandle<JS::Value> aVp)
   {
     WorkerGlobalScope* scope =
       GetInstancePrivate(aCx, aObj, sProperties[SLOT_location].name);
@@ -229,41 +234,15 @@ private:
     }
 
     if (JSVAL_IS_VOID(scope->mSlots[SLOT_location])) {
-      JS::Rooted<JSString*> href(aCx), protocol(aCx), host(aCx), hostname(aCx);
-      JS::Rooted<JSString*> port(aCx), pathname(aCx), search(aCx), hash(aCx);
-
       WorkerPrivate::LocationInfo& info = scope->mWorker->GetLocationInfo();
 
-#define COPY_STRING(_jsstr, _cstr)                                             \
-  if (info. _cstr .IsEmpty()) {                                                \
-    _jsstr = NULL;                                                             \
-  }                                                                            \
-  else {                                                                       \
-    if (!(_jsstr = JS_NewStringCopyN(aCx, info. _cstr .get(),                  \
-                                     info. _cstr .Length()))) {                \
-      return false;                                                            \
-    }                                                                          \
-    info. _cstr .Truncate();                                                   \
-  }
-
-      COPY_STRING(href, mHref);
-      COPY_STRING(protocol, mProtocol);
-      COPY_STRING(host, mHost);
-      COPY_STRING(hostname, mHostname);
-      COPY_STRING(port, mPort);
-      COPY_STRING(pathname, mPathname);
-      COPY_STRING(search, mSearch);
-      COPY_STRING(hash, mHash);
-
-#undef COPY_STRING
-
-      JSObject* location = location::Create(aCx, href, protocol, host, hostname,
-                                            port, pathname, search, hash);
+      nsRefPtr<WorkerLocation> location =
+        WorkerLocation::Create(aCx, aObj, info);
       if (!location) {
         return false;
       }
 
-      scope->mSlots[SLOT_location] = OBJECT_TO_JSVAL(location);
+      scope->mSlots[SLOT_location] = OBJECT_TO_JSVAL(location->GetJSObject());
     }
 
     aVp.set(scope->mSlots[SLOT_location]);
@@ -309,7 +288,8 @@ private:
   }
 
   static JSBool
-  GetOnErrorListener(JSContext* aCx, JSHandleObject aObj, JSHandleId aIdval, JSMutableHandleValue aVp)
+  GetOnErrorListener(JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aIdval,
+                     JS::MutableHandle<JS::Value> aVp)
   {
     const char* name = sEventStrings[STRING_onerror];
     WorkerGlobalScope* scope = GetInstancePrivate(aCx, aObj, name);
@@ -340,8 +320,8 @@ private:
   }
 
   static JSBool
-  SetOnErrorListener(JSContext* aCx, JSHandleObject aObj, JSHandleId aIdval,
-                     JSBool aStrict, JSMutableHandleValue aVp)
+  SetOnErrorListener(JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aIdval,
+                     JSBool aStrict, JS::MutableHandle<JS::Value> aVp)
   {
     const char* name = sEventStrings[STRING_onerror];
     WorkerGlobalScope* scope = GetInstancePrivate(aCx, aObj, name);
@@ -383,7 +363,8 @@ private:
   }
 
   static JSBool
-  GetNavigator(JSContext* aCx, JSHandleObject aObj, JSHandleId aIdval, JSMutableHandleValue aVp)
+  GetNavigator(JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aIdval,
+               JS::MutableHandle<JS::Value> aVp)
   {
     WorkerGlobalScope* scope =
       GetInstancePrivate(aCx, aObj, sProperties[SLOT_navigator].name);
@@ -392,12 +373,12 @@ private:
     }
 
     if (JSVAL_IS_VOID(scope->mSlots[SLOT_navigator])) {
-      JSObject* navigator = navigator::Create(aCx);
+      nsRefPtr<WorkerNavigator> navigator = WorkerNavigator::Create(aCx, aObj);
       if (!navigator) {
         return false;
       }
 
-      scope->mSlots[SLOT_navigator] = OBJECT_TO_JSVAL(navigator);
+      scope->mSlots[SLOT_navigator] = OBJECT_TO_JSVAL(navigator->GetJSObject());
     }
 
     aVp.set(scope->mSlots[SLOT_navigator]);
@@ -732,7 +713,8 @@ private:
   using EventTarget::SetEventListener;
 
   static JSBool
-  GetEventListener(JSContext* aCx, JSHandleObject aObj, JSHandleId aIdval, JSMutableHandleValue aVp)
+  GetEventListener(JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aIdval,
+                   JS::MutableHandle<JS::Value> aVp)
   {
     JS_ASSERT(JSID_IS_INT(aIdval));
     JS_ASSERT(JSID_TO_INT(aIdval) >= 0 && JSID_TO_INT(aIdval) < STRING_COUNT);
@@ -758,8 +740,8 @@ private:
   }
 
   static JSBool
-  SetEventListener(JSContext* aCx, JSHandleObject aObj, JSHandleId aIdval, JSBool aStrict,
-                   JSMutableHandleValue aVp)
+  SetEventListener(JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aIdval,
+                   JSBool aStrict, JS::MutableHandle<JS::Value> aVp)
   {
     JS_ASSERT(JSID_IS_INT(aIdval));
     JS_ASSERT(JSID_TO_INT(aIdval) >= 0 && JSID_TO_INT(aIdval) < STRING_COUNT);
@@ -812,7 +794,7 @@ private:
   }
 
   static JSBool
-  Resolve(JSContext* aCx, JSHandleObject aObj, JSHandleId aId, unsigned aFlags,
+  Resolve(JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aId, unsigned aFlags,
           JS::MutableHandle<JSObject*> aObjp)
   {
     JSBool resolved;
@@ -967,9 +949,12 @@ CreateDedicatedWorkerGlobalScope(JSContext* aCx)
   WorkerPrivate* worker = GetWorkerPrivateFromContext(aCx);
   JS_ASSERT(worker);
 
+  JS::CompartmentOptions options;
+  if (worker->IsChromeWorker())
+    options.setVersion(JSVERSION_LATEST);
   JS::Rooted<JSObject*> global(aCx,
     JS_NewGlobalObject(aCx, DedicatedWorkerGlobalScope::Class(),
-                       GetWorkerPrincipal()));
+                       GetWorkerPrincipal(), options));
   if (!global) {
     return NULL;
   }
@@ -1027,9 +1012,7 @@ CreateDedicatedWorkerGlobalScope(JSContext* aCx)
   if (!events::InitClasses(aCx, global, false) ||
       !file::InitClasses(aCx, global) ||
       !exceptions::InitClasses(aCx, global) ||
-      !location::InitClass(aCx, global) ||
-      !imagedata::InitClass(aCx, global) ||
-      !navigator::InitClass(aCx, global)) {
+      !imagedata::InitClass(aCx, global)) {
     return NULL;
   }
 
@@ -1039,7 +1022,9 @@ CreateDedicatedWorkerGlobalScope(JSContext* aCx)
       !TextEncoderBinding_workers::GetConstructorObject(aCx, global) ||
       !XMLHttpRequestBinding_workers::GetConstructorObject(aCx, global) ||
       !XMLHttpRequestUploadBinding_workers::GetConstructorObject(aCx, global) ||
-      !URLBinding_workers::GetConstructorObject(aCx, global)) {
+      !URLBinding_workers::GetConstructorObject(aCx, global) ||
+      !WorkerLocationBinding_workers::GetConstructorObject(aCx, global) ||
+      !WorkerNavigatorBinding_workers::GetConstructorObject(aCx, global)) {
     return NULL;
   }
 

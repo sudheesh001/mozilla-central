@@ -54,6 +54,10 @@ const Cr = Components.results;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
+XPCOMUtils.defineLazyModuleGetter(this, "DownloadIntegration",
+                                  "resource://gre/modules/DownloadIntegration.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "FileUtils",
+                                  "resource://gre/modules/FileUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "NetUtil",
                                   "resource://gre/modules/NetUtil.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "OS",
@@ -66,6 +70,15 @@ XPCOMUtils.defineLazyModuleGetter(this, "Task",
 const BackgroundFileSaverStreamListener = Components.Constructor(
       "@mozilla.org/network/background-file-saver;1?mode=streamlistener",
       "nsIBackgroundFileSaver");
+
+/**
+ * Returns true if the given value is a primitive string or a String object.
+ */
+function isString(aValue) {
+  // We cannot use the "instanceof" operator reliably across module boundaries.
+  return (typeof aValue == "string") ||
+         (typeof aValue == "object" && "charAt" in aValue);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 //// Download
@@ -269,6 +282,14 @@ Download.prototype = {
         yield this._promiseCanceled;
       }
 
+      // Disallow download if parental controls service restricts it.
+      if (yield DownloadIntegration.shouldBlockForParentalControls(this)) {
+        let error = new DownloadError(Cr.NS_ERROR_FAILURE, "Download blocked.");
+        error.becauseBlocked = true;
+        error.becauseBlockedByParentalControls = true;
+        throw error;
+      }
+
       try {
         // Execute the actual download through the saver object.
         yield this.saver.execute(DS_setProgressBytes.bind(this));
@@ -412,6 +433,71 @@ Download.prototype = {
     }
     this._notifyChange();
   },
+
+  /**
+   * Returns a static representation of the current object state.
+   *
+   * @return A JavaScript object that can be serialized to JSON.
+   */
+  toSerializable: function ()
+  {
+    let serializable = {
+      source: this.source.toSerializable(),
+      target: this.target.toSerializable(),
+    };
+
+    // Simplify the representation for the most common saver type.  If the saver
+    // is an object instead of a simple string, we can't simplify it because we
+    // need to persist all its properties, not only "type".  This may happen for
+    // savers of type "copy" as well as other types.
+    let saver = this.saver.toSerializable();
+    if (saver !== "copy") {
+      serializable.saver = saver;
+    }
+
+    return serializable;
+  },
+};
+
+/**
+ * Creates a new Download object from a serializable representation.  This
+ * function is used by the createDownload method of Downloads.jsm when a new
+ * Download object is requested, thus some properties may refer to live objects
+ * in place of their serializable representations.
+ *
+ * @param aSerializable
+ *        An object with the following fields:
+ *        {
+ *          source: DownloadSource object, or its serializable representation.
+ *                  See DownloadSource.fromSerializable for details.
+ *          target: DownloadTarget object, or its serializable representation.
+ *                  See DownloadTarget.fromSerializable for details.
+ *          saver: Serializable representation of a DownloadSaver object.  See
+ *                 DownloadSaver.fromSerializable for details.  If omitted,
+ *                 defaults to "copy".
+ *        }
+ *
+ * @return The newly created Download object.
+ */
+Download.fromSerializable = function (aSerializable) {
+  let download = new Download();
+  if (aSerializable.source instanceof DownloadSource) {
+    download.source = aSerializable.source;
+  } else {
+    download.source = DownloadSource.fromSerializable(aSerializable.source);
+  }
+  if (aSerializable.target instanceof DownloadTarget) {
+    download.target = aSerializable.target;
+  } else {
+    download.target = DownloadTarget.fromSerializable(aSerializable.target);
+  }
+  if ("saver" in aSerializable) {
+    download.saver = DownloadSaver.fromSerializable(aSerializable.saver);
+  } else {
+    download.saver = DownloadSaver.fromSerializable("copy");
+  }
+  download.saver.download = download;
+  return download;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -424,22 +510,80 @@ function DownloadSource() { }
 
 DownloadSource.prototype = {
   /**
-   * The nsIURI for the download source.
+   * String containing the URI for the download source.
    */
-  uri: null,
+  url: null,
 
   /**
    * Indicates whether the download originated from a private window.  This
-   * determines the context of the network request that is made to retrieve the 
+   * determines the context of the network request that is made to retrieve the
    * resource.
    */
   isPrivate: false,
 
   /**
-   * The nsIURI for the referrer of the download source, or null if no referrer
-   * should be sent or the download source is not HTTP.
+   * String containing the referrer URI of the download source, or null if no
+   * referrer should be sent or the download source is not HTTP.
    */
   referrer: null,
+
+  /**
+   * Returns a static representation of the current object state.
+   *
+   * @return A JavaScript object that can be serialized to JSON.
+   */
+  toSerializable: function ()
+  {
+    // Simplify the representation if we don't have other details.
+    if (!this.isPrivate && !this.referrer) {
+      return this.url;
+    }
+
+    let serializable = { url: this.url };
+    if (this.isPrivate) {
+      serializable.isPrivate = true;
+    }
+    if (this.referrer) {
+      serializable.referrer = this.referrer;
+    }
+    return serializable;
+  },
+};
+
+/**
+ * Creates a new DownloadSource object from its serializable representation.
+ *
+ * @param aSerializable
+ *        Serializable representation of a DownloadSource object.  This may be a
+ *        string containing the URI for the download source, an nsIURI, or an
+ *        object with the following properties:
+ *        {
+ *          url: String containing the URI for the download source.
+ *          isPrivate: Indicates whether the download originated from a private
+ *                     window.  If omitted, the download is public.
+ *          referrer: String containing the referrer URI of the download source.
+ *                    Can be omitted or null if no referrer should be sent or
+ *                    the download source is not HTTP.
+ *        }
+ *
+ * @return The newly created DownloadSource object.
+ */
+DownloadSource.fromSerializable = function (aSerializable) {
+  let source = new DownloadSource();
+  if (isString(aSerializable)) {
+    source.url = aSerializable;
+  } else if (aSerializable instanceof Ci.nsIURI) {
+    source.url = aSerializable.spec;
+  } else {
+    source.url = aSerializable.url;
+    if ("isPrivate" in aSerializable) {
+      source.isPrivate = aSerializable.isPrivate;
+    }
+    if ("referrer" in aSerializable) {
+      source.referrer = aSerializable.referrer;
+    }
+  }
+  return source;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -453,9 +597,48 @@ function DownloadTarget() { }
 
 DownloadTarget.prototype = {
   /**
-   * The nsIFile for the download target.
+   * String containing the path of the target file.
    */
-  file: null,
+  path: null,
+
+  /**
+   * Returns a static representation of the current object state.
+   *
+   * @return A JavaScript object that can be serialized to JSON.
+   */
+  toSerializable: function ()
+  {
+    // Simplify the representation since we don't have other details for now.
+    return this.path;
+  },
+};
+
+/**
+ * Creates a new DownloadTarget object from its serializable representation.
+ *
+ * @param aSerializable
+ *        Serializable representation of a DownloadTarget object.  This may be a
+ *        string containing the path of the target file, an nsIFile, or an
+ *        object with the following properties:
+ *        {
+ *          path: String containing the path of the target file.
+ *        }
+ *
+ * @return The newly created DownloadTarget object.
+ */
+DownloadTarget.fromSerializable = function (aSerializable) {
+  let target = new DownloadTarget();
+  if (isString(aSerializable)) {
+    target.path = aSerializable;
+  } else if (aSerializable instanceof Ci.nsIFile) {
+    // Read the "path" property of nsIFile after checking the object type.
+    target.path = aSerializable.path;
+  } else {
+    // Read the "path" property of the serializable DownloadTarget
+    // representation.
+    target.path = aSerializable.path;
+  }
+  return target;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -514,6 +697,18 @@ DownloadError.prototype = {
    * Indicates an error occurred while writing to the local target.
    */
   becauseTargetFailed: false,
+
+  /**
+   * Indicates the download failed because it was blocked.  If the reason for
+   * blocking is known, the corresponding property will be also set.
+   */
+  becauseBlocked: false,
+
+  /**
+   * Indicates the download was blocked because downloads are globally
+   * disallowed by the Parental Controls or Family Safety features on Windows.
+   */
+  becauseBlockedByParentalControls: false,
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -555,6 +750,43 @@ DownloadSaver.prototype = {
   {
     throw new Error("Not implemented.");
   },
+
+  /**
+   * Returns a static representation of the current object state.
+   *
+   * @return A JavaScript object that can be serialized to JSON.
+   */
+  toSerializable: function ()
+  {
+    throw new Error("Not implemented.");
+  },
+};
+
+/**
+ * Creates a new DownloadSaver object from its serializable representation.
+ *
+ * @param aSerializable
+ *        Serializable representation of a DownloadSaver object.  If no initial
+ *        state information for the saver object is needed, can be a string
+ *        representing the class of the download operation, for example "copy".
+ *
+ * @return The newly created DownloadSaver object.
+ */
+DownloadSaver.fromSerializable = function (aSerializable) {
+  let serializable = isString(aSerializable) ? { type: aSerializable }
+                                             : aSerializable;
+  let saver;
+  switch (serializable.type) {
+    case "copy":
+      saver = DownloadCopySaver.fromSerializable(serializable);
+      break;
+    case "legacy":
+      saver = DownloadLegacySaver.fromSerializable(serializable);
+      break;
+    default:
+      throw new Error("Unrecoginzed download saver type.");
+  }
+  return saver;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -606,15 +838,16 @@ DownloadCopySaver.prototype = {
       };
 
       // Set the target file, that will be deleted if the download fails.
-      backgroundFileSaver.setTarget(download.target.file, false);
+      backgroundFileSaver.setTarget(new FileUtils.File(download.target.path),
+                                    false);
 
       // Create a channel from the source, and listen to progress notifications.
-      let channel = NetUtil.newChannel(download.source.uri);
+      let channel = NetUtil.newChannel(NetUtil.newURI(download.source.url));
       if (channel instanceof Ci.nsIPrivateBrowsingChannel) {
         channel.setPrivate(download.source.isPrivate);
       }
-      if (channel instanceof Ci.nsIHttpChannel) {
-        channel.referrer = download.source.referrer;
+      if (channel instanceof Ci.nsIHttpChannel && download.source.referrer) {
+        channel.referrer = NetUtil.newURI(download.source.referrer);
       }
 
       channel.notificationCallbacks = {
@@ -686,6 +919,29 @@ DownloadCopySaver.prototype = {
       this._backgroundFileSaver = null;
     }
   },
+
+  /**
+   * Implements "DownloadSaver.toSerializable".
+   */
+  toSerializable: function ()
+  {
+    // Simplify the representation since we don't have other details for now.
+    return "copy";
+  },
+};
+
+/**
+ * Creates a new DownloadCopySaver object, with its initial state derived from
+ * its serializable representation.
+ *
+ * @param aSerializable
+ *        Serializable representation of a DownloadCopySaver object.
+ *
+ * @return The newly created DownloadCopySaver object.
+ */
+DownloadCopySaver.fromSerializable = function (aSerializable) {
+  // We don't have other state details for now.
+  return new DownloadCopySaver();
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -805,7 +1061,7 @@ DownloadLegacySaver.prototype = {
         // empty file is created as expected.
         try {
           // This atomic operation is more efficient than an existence check.
-          let file = yield OS.File.open(this.download.target.file.path,
+          let file = yield OS.File.open(this.download.target.path,
                                         { create: true });
           yield file.close();
         } catch (ex if ex instanceof OS.File.Error && ex.becauseExists) { }
@@ -830,4 +1086,13 @@ DownloadLegacySaver.prototype = {
     this.deferExecuted.reject(new DownloadError(Cr.NS_ERROR_FAILURE,
                                                 "Download canceled."));
   },
+};
+
+/**
+ * Returns a new DownloadLegacySaver object.  This saver type has a
+ * deserializable form only when creating a new object in memory, because it
+ * cannot be serialized to disk.
+ */
+DownloadLegacySaver.fromSerializable = function () {
+  return new DownloadLegacySaver();
 };

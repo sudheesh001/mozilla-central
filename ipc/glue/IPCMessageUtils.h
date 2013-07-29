@@ -788,6 +788,22 @@ struct ParamTraits<nsIntSize>
   }
 };
 
+template<class T, class U>
+struct ParamTraits< mozilla::gfx::ScaleFactor<T, U> >
+{
+  typedef mozilla::gfx::ScaleFactor<T, U> paramType;
+
+  static void Write(Message* msg, const paramType& param)
+  {
+    WriteParam(msg, param.scale);
+  }
+
+  static bool Read(const Message* msg, void** iter, paramType* result)
+  {
+    return (ReadParam(msg, iter, &result->scale));
+  }
+};
+
 template<class T>
 struct ParamTraits< mozilla::gfx::PointTyped<T> >
 {
@@ -890,6 +906,28 @@ template<>
 struct ParamTraits<mozilla::gfx::Margin>
 {
   typedef mozilla::gfx::Margin paramType;
+
+  static void Write(Message* msg, const paramType& param)
+  {
+    WriteParam(msg, param.top);
+    WriteParam(msg, param.right);
+    WriteParam(msg, param.bottom);
+    WriteParam(msg, param.left);
+  }
+
+  static bool Read(const Message* msg, void** iter, paramType* result)
+  {
+    return (ReadParam(msg, iter, &result->top) &&
+            ReadParam(msg, iter, &result->right) &&
+            ReadParam(msg, iter, &result->bottom) &&
+            ReadParam(msg, iter, &result->left));
+  }
+};
+
+template<class T>
+struct ParamTraits< mozilla::gfx::MarginTyped<T> >
+{
+  typedef mozilla::gfx::MarginTyped<T> paramType;
 
   static void Write(Message* msg, const paramType& param)
   {
@@ -1133,14 +1171,14 @@ struct ParamTraits<mozilla::layers::TextureInfo>
   static void Write(Message* aMsg, const paramType& aParam)
   {
     WriteParam(aMsg, aParam.mCompositableType);
-    WriteParam(aMsg, aParam.mTextureHostFlags);
+    WriteParam(aMsg, aParam.mDeprecatedTextureHostFlags);
     WriteParam(aMsg, aParam.mTextureFlags);
   }
 
   static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
   {
     return ReadParam(aMsg, aIter, &aResult->mCompositableType) &&
-           ReadParam(aMsg, aIter, &aResult->mTextureHostFlags) &&
+           ReadParam(aMsg, aIter, &aResult->mDeprecatedTextureHostFlags) &&
            ReadParam(aMsg, aIter, &aResult->mTextureFlags);
   }
 };

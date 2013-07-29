@@ -5,9 +5,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ion/BytecodeAnalysis.h"
+
 #include "jsopcode.h"
+
 #include "jsopcodeinlines.h"
-#include "jsobjinlines.h"
 
 using namespace js;
 using namespace js::ion;

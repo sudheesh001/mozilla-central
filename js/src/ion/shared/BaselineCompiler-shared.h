@@ -4,15 +4,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef jsion_baselinecompiler_shared_h__
-#define jsion_baselinecompiler_shared_h__
+#ifndef ion_shared_BaselineCompiler_shared_h
+#define ion_shared_BaselineCompiler_shared_h
 
 #include "jscntxt.h"
+
 #include "ion/BaselineFrameInfo.h"
-#include "ion/IonSpewer.h"
 #include "ion/BaselineIC.h"
 #include "ion/IonInstrumentation.h"
 #include "ion/IonMacroAssembler.h"
+#include "ion/IonSpewer.h"
 
 namespace js {
 namespace ion {
@@ -140,4 +141,4 @@ class BaselineCompilerShared
 } // namespace ion
 } // namespace js
 
-#endif // jsion_baselinecompiler_shared_h__
+#endif /* ion_shared_BaselineCompiler_shared_h */

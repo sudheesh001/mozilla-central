@@ -4,22 +4,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "jsapi.h"
-#include "jscntxt.h"
-#include "jsgc.h"
-#include "jsprf.h"
+#include "gc/Zone.h"
 
-#include "vm/Debugger.h"
-#include "js/HashTable.h"
-#include "gc/GCInternals.h"
+#include "jsgc.h"
 
 #ifdef JS_ION
 #include "ion/BaselineJIT.h"
-#include "ion/IonCompartment.h"
 #include "ion/Ion.h"
+#include "ion/IonCompartment.h"
 #endif
+#include "vm/Debugger.h"
+#include "vm/Runtime.h"
 
-#include "jsobjinlines.h"
 #include "jsgcinlines.h"
 
 using namespace js;
@@ -38,6 +34,7 @@ JS::Zone::Zone(JSRuntime *rt)
     gcTriggerBytes(0),
     gcHeapGrowthFactor(3.0),
     isSystem(false),
+    usedByExclusiveThread(false),
     scheduledForDestruction(false),
     maybeAlive(true),
     gcMallocBytes(0),

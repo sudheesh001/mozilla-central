@@ -169,20 +169,19 @@ RemoveFromAgentSheets(nsCOMArray<nsIStyleSheet> &aAgentSheets, const nsAString& 
 nsresult
 NS_NewHTMLDocument(nsIDocument** aInstancePtrResult, bool aLoadedAsData)
 {
-  nsHTMLDocument* doc = new nsHTMLDocument();
-  NS_ENSURE_TRUE(doc, NS_ERROR_OUT_OF_MEMORY);
+  nsRefPtr<nsHTMLDocument> doc = new nsHTMLDocument();
 
-  NS_ADDREF(doc);
   nsresult rv = doc->Init();
 
   if (NS_FAILED(rv)) {
-    NS_RELEASE(doc);
+    *aInstancePtrResult = nullptr;
+    return rv;
   }
 
-  *aInstancePtrResult = doc;
   doc->SetLoadedAsData(aLoadedAsData);
+  doc.forget(aInstancePtrResult);
 
-  return rv;
+  return NS_OK;
 }
 
   // NOTE! nsDocument::operator new() zeroes out all members, so don't
@@ -197,14 +196,11 @@ nsHTMLDocument::nsHTMLDocument()
   mIsRegularHTML = true;
   mDefaultElementType = kNameSpaceID_XHTML;
   mCompatMode = eCompatibility_NavQuirks;
-
-  SetIsDOMBinding();
 }
 
 nsHTMLDocument::~nsHTMLDocument()
 {
   mAll = nullptr;
-  NS_DROP_JS_OBJECTS(this, nsHTMLDocument);
 }
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(nsHTMLDocument, nsDocument)
@@ -1073,20 +1069,20 @@ nsHTMLDocument::SetDomain(const nsAString& aDomain, ErrorResult& rv)
 nsGenericHTMLElement*
 nsHTMLDocument::GetBody()
 {
-  Element* body = GetBodyElement();
-
-  if (body) {
-    // There is a body element, return that as the body.
-    return static_cast<nsGenericHTMLElement*>(body);
+  Element* html = GetHtmlElement();
+  if (!html) {
+    return nullptr;
   }
 
-  // The document is most likely a frameset document so look for the
-  // outer most frameset element
-  nsRefPtr<nsContentList> nodeList =
-    NS_GetContentList(this, kNameSpaceID_XHTML, NS_LITERAL_STRING("frameset"));
-  Element* frameset = nodeList->GetElementAt(0);
-  MOZ_ASSERT(!frameset || frameset->IsHTML());
-  return static_cast<nsGenericHTMLElement*>(frameset);
+  for (nsIContent* child = html->GetFirstChild();
+       child;
+       child = child->GetNextSibling()) {
+    if (child->IsHTML(nsGkAtoms::body) || child->IsHTML(nsGkAtoms::frameset)) {
+      return static_cast<nsGenericHTMLElement*>(child);
+    }
+  }
+
+  return nullptr;
 }
 
 NS_IMETHODIMP
@@ -1127,12 +1123,12 @@ nsHTMLDocument::SetBody(nsGenericHTMLElement* newBody, ErrorResult& rv)
   }
 
   // Use DOM methods so that we pass through the appropriate security checks.
-  Element* currentBody = GetBodyElement();
+  nsCOMPtr<Element> currentBody = GetBodyElement();
   if (currentBody) {
     root->ReplaceChild(*newBody, *currentBody, rv);
+  } else {
+    root->AppendChild(*newBody, rv);
   }
-
-  root->AppendChild(*newBody, rv);
 }
 
 NS_IMETHODIMP
@@ -2295,39 +2291,6 @@ nsHTMLDocument::ResolveName(const nsAString& aName, nsWrapperCache **aCache)
   return nullptr;
 }
 
-already_AddRefed<nsISupports>
-nsHTMLDocument::ResolveName(const nsAString& aName,
-                            nsIContent *aForm,
-                            nsWrapperCache **aCache)
-{
-  nsISupports* result = ResolveName(aName, aCache);
-  if (!result) {
-    return nullptr;
-  }
-
-  nsCOMPtr<nsIContent> node = do_QueryInterface(result);
-  if (!node) {
-    // We create a nsFormContentList which will filter out the elements in the
-    // list that don't belong to aForm.
-    nsRefPtr<nsBaseContentList> list =
-      new nsFormContentList(aForm, *static_cast<nsBaseContentList*>(result));
-    if (list->Length() > 1) {
-      *aCache = list;
-      return list.forget();
-    }
-
-    // After the nsFormContentList is done filtering there's either nothing or
-    // one element in the list. Return that element, or null if there's no
-    // element in the list.
-    node = list->Item(0);
-  } else if (!nsContentUtils::BelongsInForm(aForm, node)) {
-    node = nullptr;
-  }
-
-  *aCache = node;
-  return node.forget();
-}
-
 JSObject*
 nsHTMLDocument::NamedGetter(JSContext* cx, const nsAString& aName, bool& aFound,
                             ErrorResult& rv)
@@ -2737,7 +2700,7 @@ nsHTMLDocument::GetAll(JSContext* aCx, ErrorResult& aRv)
     JS_SetPrivate(mAll, static_cast<nsINode*>(this));
     NS_ADDREF_THIS();
 
-    NS_HOLD_JS_OBJECTS(this, nsHTMLDocument);
+    PreserveWrapper(static_cast<nsINode*>(this));
   }
 
   return mAll;

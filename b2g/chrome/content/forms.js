@@ -208,6 +208,7 @@ let FormAssistant = {
   _documentEncoder: null,
   _editor: null,
   _editing: false,
+  _ignoreEditActionOnce: false,
 
   get focusedElement() {
     if (this._focusedElement && Cu.isDeadWrapper(this._focusedElement))
@@ -234,7 +235,13 @@ let FormAssistant = {
 
     this._documentEncoder = null;
     if (this._editor) {
-      this._editor.removeEditorObserver(this);
+      // When the nsIFrame of the input element is reconstructed by
+      // CSS restyling, the editor observers are removed. Catch
+      // [nsIEditor.removeEditorObserver] failure exception if that
+      // happens.
+      try {
+        this._editor.removeEditorObserver(this);
+      } catch (e) {}
       this._editor = null;
     }
 
@@ -268,7 +275,9 @@ let FormAssistant = {
   // current input field has changed.
   EditAction: function fa_editAction() {
     if (this._editing) {
-      this._editing = false;
+      return;
+    } else if (this._ignoreEditActionOnce) {
+      this._ignoreEditActionOnce = false;
       return;
     }
     this.sendKeyboardState(this.focusedElement);
@@ -364,7 +373,7 @@ let FormAssistant = {
 
       case "keydown":
         // Don't monitor the text change resulting from key event.
-        this._editing = true;
+        this._ignoreEditActionOnce = true;
 
         // We use 'setTimeout' to wait until the input element accomplishes the
         // change in selection range.
@@ -374,7 +383,7 @@ let FormAssistant = {
         break;
 
       case "keyup":
-        this._editing = false;
+        this._ignoreEditActionOnce = false;
         break;
     }
   },
@@ -672,7 +681,7 @@ function getDocumentEncoder(element) {
   let flags = Ci.nsIDocumentEncoder.SkipInvisibleContent |
               Ci.nsIDocumentEncoder.OutputRaw |
               Ci.nsIDocumentEncoder.OutputLFLineBreak |
-              Ci.nsIDocumentEncoder.OutputDropInvisibleBreak;
+              Ci.nsIDocumentEncoder.OutputNonTextContentAsPlaceholder;
   encoder.init(element.ownerDocument, "text/plain", flags);
   return encoder;
 }

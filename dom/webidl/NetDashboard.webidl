@@ -15,8 +15,13 @@ dictionary SocketsDict {
 };
 
 dictionary HttpConnInfoDict {
-	sequence<unsigned long> rtt;
-	sequence<unsigned long> ttl;
+  sequence<unsigned long> rtt;
+  sequence<unsigned long> ttl;
+  sequence<DOMString> protocolVersion;
+};
+
+dictionary HalfOpenInfoDict {
+  sequence<boolean> speculative;
 };
 
 dictionary HttpConnDict {
@@ -24,6 +29,7 @@ dictionary HttpConnDict {
   sequence<unsigned long> port;
   sequence<HttpConnInfoDict> active;
   sequence<HttpConnInfoDict> idle;
+  sequence<HalfOpenInfoDict> halfOpens;
   sequence<boolean> spdy;
   sequence<boolean> ssl;
 };

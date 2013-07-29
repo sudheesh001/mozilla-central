@@ -208,15 +208,13 @@ static nsEventStatus
 sendKeyEventWithMsg(uint32_t keyCode,
                     KeyNameIndex keyNameIndex,
                     uint32_t msg,
-                    uint64_t timeMs,
-                    const EventFlags& flags)
+                    uint64_t timeMs)
 {
     nsKeyEvent event(true, msg, NULL);
     event.keyCode = keyCode;
     event.mKeyNameIndex = keyNameIndex;
     event.location = nsIDOMKeyEvent::DOM_KEY_LOCATION_MOBILE;
     event.time = timeMs;
-    event.mFlags.Union(flags);
     return nsWindow::DispatchInputEvent(event);
 }
 
@@ -227,12 +225,9 @@ sendKeyEvent(uint32_t keyCode, KeyNameIndex keyNameIndex, bool down,
     EventFlags extraFlags;
     nsEventStatus status =
         sendKeyEventWithMsg(keyCode, keyNameIndex,
-                            down ? NS_KEY_DOWN : NS_KEY_UP, timeMs, extraFlags);
-    if (down) {
-        extraFlags.mDefaultPrevented =
-            (status == nsEventStatus_eConsumeNoDefault);
-        sendKeyEventWithMsg(keyCode, keyNameIndex, NS_KEY_PRESS, timeMs,
-                            extraFlags);
+                            down ? NS_KEY_DOWN : NS_KEY_UP, timeMs);
+    if (down && status != nsEventStatus_eConsumeNoDefault) {
+        sendKeyEventWithMsg(keyCode, keyNameIndex, NS_KEY_PRESS, timeMs);
     }
 }
 
@@ -377,7 +372,7 @@ public:
             int32_t injectorPid, int32_t injectorUid, int32_t syncMode, int32_t timeoutMillis,
             uint32_t policyFlags);
 
-    virtual void setInputWindows(const Vector<sp<InputWindowHandle> >& inputWindowHandles);
+    virtual void setInputWindows(const android::Vector<sp<InputWindowHandle> >& inputWindowHandles);
     virtual void setFocusedApplication(const sp<InputApplicationHandle>& inputApplicationHandle);
 
     virtual void setInputDispatchMode(bool enabled, bool frozen);
@@ -573,7 +568,7 @@ int32_t GeckoInputDispatcher::injectInputEvent(
 }
 
 void
-GeckoInputDispatcher::setInputWindows(const Vector<sp<InputWindowHandle> >& inputWindowHandles)
+GeckoInputDispatcher::setInputWindows(const android::Vector<sp<InputWindowHandle> >& inputWindowHandles)
 {
 }
 
@@ -602,8 +597,8 @@ GeckoInputDispatcher::unregisterInputChannel(const sp<InputChannel>& inputChanne
 
 nsAppShell::nsAppShell()
     : mNativeCallbackRequest(false)
-    , mHandlers()
     , mEnableDraw(false)
+    , mHandlers()
 {
     gAppShell = this;
 }

@@ -101,6 +101,9 @@ WebConsoleClient.prototype = {
    *        - frameActor: a FrameActor ID. The FA holds a reference to
    *        a Debugger.Frame. This option allows you to evaluate the string in
    *        the frame of the given FA.
+   *
+   *        - url: the url to evaluate the script as. Defaults to
+   *        "debugger eval code".
    */
   evaluateJS: function WCC_evaluateJS(aString, aOnResponse, aOptions = {})
   {
@@ -110,6 +113,7 @@ WebConsoleClient.prototype = {
       text: aString,
       bindObjectActor: aOptions.bindObjectActor,
       frameActor: aOptions.frameActor,
+      url: aOptions.url,
     };
     this._client.request(packet, aOnResponse);
   },
@@ -145,6 +149,24 @@ WebConsoleClient.prototype = {
       type: "clearMessagesCache",
     };
     this._client.request(packet);
+  },
+
+  /**
+   * Get Web Console-related preferences on the server.
+   *
+   * @param object aPreferences
+   *        An object with the preferences you want to retrieve.
+   * @param function [aOnResponse]
+   *        Optional function to invoke when the response is received.
+   */
+  getPreferences: function WCC_getPreferences(aPreferences, aOnResponse)
+  {
+    let packet = {
+      to: this._actor,
+      type: "getPreferences",
+      preferences: aPreferences,
+    };
+    this._client.request(packet, aOnResponse);
   },
 
   /**
@@ -280,6 +302,23 @@ WebConsoleClient.prototype = {
     let packet = {
       to: aActor,
       type: "getEventTimings",
+    };
+    this._client.request(packet, aOnResponse);
+  },
+
+  /**
+   * Send a HTTP request with the given data.
+   *
+   * @param string aData
+   *        The details of the HTTP request.
+   * @param function aOnResponse
+   *        The function invoked when the response is received.
+   */
+  sendHTTPRequest: function WCC_sendHTTPRequest(aData, aOnResponse) {
+    let packet = {
+      to: this._actor,
+      type: "sendHTTPRequest",
+      request: aData
     };
     this._client.request(packet, aOnResponse);
   },

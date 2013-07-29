@@ -308,7 +308,7 @@ nsContentSink::ProcessHeaderData(nsIAtom* aHeader, const nsAString& aValue,
     NS_ENSURE_TRUE(codebaseURI, rv);
 
     nsCOMPtr<nsIPrompt> prompt;
-    nsCOMPtr<nsIDOMWindow> window = do_QueryInterface(mDocument->GetScriptGlobalObject());
+    nsCOMPtr<nsIDOMWindow> window = do_QueryInterface(mDocument->GetWindow());
     if (window) {
       window->GetPrompter(getter_AddRefs(prompt));
     }
@@ -1257,10 +1257,9 @@ nsContentSink::IsTimeToNotify()
   }
 
   PRTime now = PR_Now();
-  int64_t interval, diff;
 
-  LL_I2L(interval, GetNotificationInterval());
-  diff = now - mLastNotificationTime;
+  int64_t interval = GetNotificationInterval();
+  int64_t diff = now - mLastNotificationTime;
 
   if (diff > interval) {
     mBackoffCount--;
@@ -1501,7 +1500,7 @@ nsContentSink::IsScriptExecutingImpl()
 nsresult
 nsContentSink::WillParseImpl(void)
 {
-  if (mRunsToCompletion) {
+  if (mRunsToCompletion || !mDocument) {
     return NS_OK;
   }
 

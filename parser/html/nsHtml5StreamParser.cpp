@@ -26,6 +26,7 @@
 #include "nsINestedURI.h"
 #include "nsCharsetSource.h"
 #include "nsIWyciwygChannel.h"
+#include "nsIInputStreamChannel.h"
 #include "nsIThreadRetargetableRequest.h"
 #include "nsPrintfCString.h"
 
@@ -875,6 +876,7 @@ nsHtml5StreamParser::OnStartRequest(nsIRequest* aRequest, nsISupports* aContext)
   bool scriptingEnabled = mMode == LOAD_AS_DATA ?
                                    false : mExecutor->IsScriptEnabled();
   mOwner->StartTokenizer(scriptingEnabled);
+  mTreeBuilder->setIsSrcdocDocument(IsSrcdocDocument());
   mTreeBuilder->setScriptingEnabled(scriptingEnabled);
   mTreeBuilder->SetPreventScriptExecution(!((mMode == NORMAL) &&
                                             scriptingEnabled));
@@ -1040,18 +1042,13 @@ nsHtml5StreamParser::OnStopRequest(nsIRequest* aRequest,
                              nsresult status)
 {
   NS_ASSERTION(mRequest == aRequest, "Got Stop on wrong stream.");
-  NS_ASSERTION(NS_IsMainThread() || IsParserThread(), "Wrong thread!");
+  NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
   if (mObserver) {
     mObserver->OnStopRequest(aRequest, aContext, status);
   }
-  if (NS_IsMainThread()) {
-    nsCOMPtr<nsIRunnable> stopper = new nsHtml5RequestStopper(this);
-    if (NS_FAILED(mThread->Dispatch(stopper, nsIThread::DISPATCH_NORMAL))) {
-      NS_WARNING("Dispatching StopRequest event failed.");
-    }
-  } else {
-    mozilla::MutexAutoLock autoLock(mTokenizerMutex);
-    DoStopRequest();
+  nsCOMPtr<nsIRunnable> stopper = new nsHtml5RequestStopper(this);
+  if (NS_FAILED(mThread->Dispatch(stopper, nsIThread::DISPATCH_NORMAL))) {
+    NS_WARNING("Dispatching StopRequest event failed.");
   }
   return NS_OK;
 }
@@ -1153,7 +1150,7 @@ nsHtml5StreamParser::OnDataAvailable(nsIRequest* aRequest,
                          aLength, &totalRead);
     NS_ENSURE_SUCCESS(rv, rv);
     NS_ASSERTION(totalRead <= aLength, "Read more bytes than were available?");
-    
+
     nsCOMPtr<nsIRunnable> dataAvailable = new nsHtml5DataAvailable(this,
                                                                    data.forget(),
                                                                    totalRead);
@@ -1192,7 +1189,6 @@ nsHtml5StreamParser::CopySegmentsToParser(nsIInputStream *aInStream,
   *aWriteCount = aCount;
   return NS_OK;
 }
-
 
 bool
 nsHtml5StreamParser::PreferredForInternalEncodingDecl(nsACString& aEncoding)
@@ -1674,4 +1670,21 @@ nsHtml5StreamParser::MarkAsBroken()
   if (NS_FAILED(NS_DispatchToMainThread(mExecutorFlusher))) {
     NS_WARNING("failed to dispatch executor flush event");
   }
+}
+
+bool
+nsHtml5StreamParser::IsSrcdocDocument()
+{
+  nsresult rv;
+
+  bool isSrcdoc = false;
+  nsCOMPtr<nsIChannel> channel;
+  rv = GetChannel(getter_AddRefs(channel));
+  if (NS_SUCCEEDED(rv)) {
+    nsCOMPtr<nsIInputStreamChannel> isr = do_QueryInterface(channel);
+    if (isr) {
+      isr->GetIsSrcdocChannel(&isSrcdoc);
+    }
+  }
+  return isSrcdoc;
 }

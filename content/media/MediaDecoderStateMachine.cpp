@@ -2044,8 +2044,11 @@ void MediaDecoderStateMachine::DecodeSeek()
     }
   }
   mDecoder->StartProgressUpdates();
-  if (mState == DECODER_STATE_SHUTDOWN)
+  if (mState == DECODER_STATE_DECODING_METADATA ||
+      mState == DECODER_STATE_DORMANT ||
+      mState == DECODER_STATE_SHUTDOWN) {
     return;
+  }
 
   // Try to decode another frame to detect if we're at the end...
   LOG(PR_LOG_DEBUG, ("%p Seek completed, mCurrentFrameTime=%lld\n",
@@ -2466,11 +2469,13 @@ void MediaDecoderStateMachine::AdvanceFrame()
     while (mRealTime || clock_time >= frame->mTime) {
       mVideoFrameEndTime = frame->mEndTime;
       currentFrame = frame;
-      LOG(PR_LOG_DEBUG, ("%p Decoder discarding video frame %lld", mDecoder.get(), frame->mTime));
 #ifdef PR_LOGGING
-      if (droppedFrames++) {
-        LOG(PR_LOG_DEBUG, ("%p Decoder discarding video frame %lld (%d so far)",
-              mDecoder.get(), frame->mTime, droppedFrames - 1));
+      if (!PR_GetEnv("MOZ_QUIET")) {
+        LOG(PR_LOG_DEBUG, ("%p Decoder discarding video frame %lld", mDecoder.get(), frame->mTime));
+        if (droppedFrames++) {
+          LOG(PR_LOG_DEBUG, ("%p Decoder discarding video frame %lld (%d so far)",
+            mDecoder.get(), frame->mTime, droppedFrames - 1));
+        }
       }
 #endif
       mReader->VideoQueue().PopFront();
@@ -2533,7 +2538,11 @@ void MediaDecoderStateMachine::AdvanceFrame()
       ScheduleStateMachine();
       return;
     }
-    mDecoder->GetFrameStatistics().NotifyPresentedFrame();
+    MediaDecoder::FrameStatistics& frameStats = mDecoder->GetFrameStatistics();
+    frameStats.NotifyPresentedFrame();
+    double frameDelay = double(clock_time - currentFrame->mTime) / USECS_PER_S;
+    NS_ASSERTION(frameDelay >= 0.0, "Frame should never be displayed early.");
+    frameStats.NotifyFrameDelay(frameDelay);
     remainingTime = currentFrame->mEndTime - clock_time;
     currentFrame = nullptr;
   }
@@ -2620,21 +2629,16 @@ void MediaDecoderStateMachine::UpdateReadyState() {
   }
   mLastFrameStatus = nextFrameStatus;
 
+  /* This is a bit tricky. MediaDecoder::UpdateReadyStateForData will run on
+   * the main thread and re-evaluate GetNextFrameStatus there, passing it to
+   * HTMLMediaElement::UpdateReadyStateForData. It doesn't use the value of
+   * GetNextFrameStatus we computed here, because what we're computing here
+   * could be stale by the time MediaDecoder::UpdateReadyStateForData runs.
+   * We only compute GetNextFrameStatus here to avoid posting runnables to the main
+   * thread unnecessarily.
+   */
   nsCOMPtr<nsIRunnable> event;
-  switch (nextFrameStatus) {
-    case MediaDecoderOwner::NEXT_FRAME_UNAVAILABLE_BUFFERING:
-      event = NS_NewRunnableMethod(mDecoder, &MediaDecoder::NextFrameUnavailableBuffering);
-      break;
-    case MediaDecoderOwner::NEXT_FRAME_AVAILABLE:
-      event = NS_NewRunnableMethod(mDecoder, &MediaDecoder::NextFrameAvailable);
-      break;
-    case MediaDecoderOwner::NEXT_FRAME_UNAVAILABLE:
-      event = NS_NewRunnableMethod(mDecoder, &MediaDecoder::NextFrameUnavailable);
-      break;
-    default:
-      PR_NOT_REACHED("unhandled frame state");
-  }
-
+  event = NS_NewRunnableMethod(mDecoder, &MediaDecoder::UpdateReadyStateForData);
   NS_DispatchToMainThread(event, NS_DISPATCH_NORMAL);
 }
 

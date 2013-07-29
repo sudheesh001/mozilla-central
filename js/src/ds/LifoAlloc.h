@@ -4,15 +4,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef LifoAlloc_h__
-#define LifoAlloc_h__
+#ifndef ds_LifoAlloc_h
+#define ds_LifoAlloc_h
 
-#include "mozilla/Assertions.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/DebugOnly.h"
-#include "mozilla/GuardObjects.h"
+#include "mozilla/MathAlgorithms.h"
 #include "mozilla/MemoryChecking.h"
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/PodOperations.h"
+#include "mozilla/TemplateLib.h"
 #include "mozilla/TypeTraits.h"
 
 // This data structure supports stacky LIFO allocation (mark/release and
@@ -21,8 +21,6 @@
 // thrashing, unused segments are deallocated when garbage collection occurs.
 
 #include "jsutil.h"
-
-#include "js/TemplateLib.h"
 
 namespace js {
 
@@ -34,8 +32,8 @@ JS_ALWAYS_INLINE
 char *
 AlignPtr(void *orig)
 {
-    MOZ_STATIC_ASSERT(tl::FloorLog2<LIFO_ALLOC_ALIGN>::result ==
-                      tl::CeilingLog2<LIFO_ALLOC_ALIGN>::result,
+    MOZ_STATIC_ASSERT(mozilla::tl::FloorLog2<LIFO_ALLOC_ALIGN>::value ==
+                      mozilla::tl::CeilingLog2<LIFO_ALLOC_ALIGN>::value,
                       "LIFO_ALLOC_ALIGN must be a power of two");
 
     char *result = (char *) ((uintptr_t(orig) + (LIFO_ALLOC_ALIGN - 1)) & (~LIFO_ALLOC_ALIGN + 1));
@@ -54,10 +52,8 @@ class BumpChunk
     char *headerBase() { return reinterpret_cast<char *>(this); }
     char *bumpBase() const { return limit - bumpSpaceSize; }
 
-    BumpChunk *thisDuringConstruction() { return this; }
-
     explicit BumpChunk(size_t bumpSpaceSize)
-      : bump(reinterpret_cast<char *>(thisDuringConstruction()) + sizeof(BumpChunk)),
+      : bump(reinterpret_cast<char *>(MOZ_THIS_IN_INITIALIZER_LIST()) + sizeof(BumpChunk)),
         limit(bump + bumpSpaceSize),
         next_(NULL), bumpSpaceSize(bumpSpaceSize)
     {
@@ -94,7 +90,7 @@ class BumpChunk
 
     size_t used() const { return bump - bumpBase(); }
 
-    size_t sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf) {
+    size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) {
         return mallocSizeOf(this);
     }
 
@@ -181,7 +177,7 @@ class LifoAlloc
     BumpChunk *getOrCreateChunk(size_t n);
 
     void reset(size_t defaultChunkSize) {
-        JS_ASSERT(RoundUpPow2(defaultChunkSize) == defaultChunkSize);
+        JS_ASSERT(mozilla::RoundUpPow2(defaultChunkSize) == defaultChunkSize);
         first = latest = last = NULL;
         defaultChunkSize_ = defaultChunkSize;
         markCount = 0;
@@ -352,7 +348,7 @@ class LifoAlloc
     }
 
     // Get the total size of the arena chunks (including unused space).
-    size_t sizeOfExcludingThis(JSMallocSizeOfFun mallocSizeOf) const {
+    size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
         size_t n = 0;
         for (BumpChunk *chunk = first; chunk; chunk = chunk->next())
             n += chunk->sizeOfIncludingThis(mallocSizeOf);
@@ -360,7 +356,7 @@ class LifoAlloc
     }
 
     // Like sizeOfExcludingThis(), but includes the size of the LifoAlloc itself.
-    size_t sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf) const {
+    size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
         return mallocSizeOf(this) + sizeOfExcludingThis(mallocSizeOf);
     }
 
@@ -413,4 +409,4 @@ class LifoAllocScope
 
 } // namespace js
 
-#endif
+#endif /* ds_LifoAlloc_h */

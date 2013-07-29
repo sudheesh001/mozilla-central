@@ -38,7 +38,6 @@
 #include "nsStyleConsts.h"
 #include "nsThreadUtils.h"
 #include "nsVideoFrame.h"
-#include "webvtt/parser.h"
 
 #ifdef PR_LOGGING
 static PRLogModuleInfo* gTrackElementLog;
@@ -54,12 +53,10 @@ NS_NewHTMLTrackElement(already_AddRefed<nsINodeInfo> aNodeInfo,
                        mozilla::dom::FromParser aFromParser)
 {
   if (!mozilla::dom::HTMLTrackElement::IsWebVTTEnabled()) {
-    return mozilla::dom::NewHTMLElementHelper::Create<nsHTMLUnknownElement,
-           mozilla::dom::HTMLUnknownElement>(aNodeInfo);
+    return new mozilla::dom::HTMLUnknownElement(aNodeInfo);
   }
 
-  return mozilla::dom::NewHTMLElementHelper::Create<nsHTMLTrackElement,
-         mozilla::dom::HTMLTrackElement>(aNodeInfo);
+  return new mozilla::dom::HTMLTrackElement(aNodeInfo);
 }
 
 namespace mozilla {
@@ -75,8 +72,6 @@ HTMLTrackElement::HTMLTrackElement(already_AddRefed<nsINodeInfo> aNodeInfo)
     gTrackElementLog = PR_NewLogModule("nsTrackElement");
   }
 #endif
-
-  SetIsDOMBinding();
 }
 
 HTMLTrackElement::~HTMLTrackElement()
@@ -93,8 +88,8 @@ NS_IMPL_CYCLE_COLLECTION_INHERITED_4(HTMLTrackElement, nsGenericHTMLElement,
                                      mLoadListener)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(HTMLTrackElement)
-  NS_INTERFACE_MAP_ENTRY(nsIDOMHTMLElement)
-NS_INTERFACE_MAP_END_INHERITING(nsGenericHTMLElement)
+  NS_HTML_CONTENT_INTERFACES(nsGenericHTMLElement)
+NS_ELEMENT_INTERFACE_MAP_END
 
 void
 HTMLTrackElement::OnChannelRedirect(nsIChannel* aChannel,
@@ -306,7 +301,7 @@ HTMLTrackElement::BindToTree(nsIDocument* aDocument,
     media->NotifyAddedSource();
     LOG(PR_LOG_DEBUG, ("Track element sent notification to parent."));
 
-    nsContentUtils::AddScriptRunner(
+    mMediaParent->RunInStableState(
       NS_NewRunnableMethod(this, &HTMLTrackElement::LoadResource));
   }
 

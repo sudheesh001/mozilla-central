@@ -338,6 +338,20 @@ nsWindow::GetDPI()
     return 160.0f;
 }
 
+double
+nsWindow::GetDefaultScaleInternal()
+{
+    float dpi = GetDPI();
+    if (dpi < 200) { // includes desktop displays, LDPI, and MDPI Android devices
+        return 1.0;
+    }
+    if (dpi < 300) { // includes Nokia N900, HDPI Android devices
+        return 1.5;
+    }
+    // for very high-density displays calculate an integer ratio.
+    return floor(dpi / 150);
+}
+
 NS_IMETHODIMP
 nsWindow::Show(bool aState)
 {
@@ -1066,11 +1080,17 @@ nsWindow::OnDraw(AndroidGeckoEvent *ae)
         return;
     }
 
+    int bytesPerPixel = 2;
+    gfxASurface::gfxImageFormat format = gfxASurface::ImageFormatRGB16_565;
+    if (AndroidBridge::Bridge()->GetScreenDepth() == 24) {
+        bytesPerPixel = 4;
+        format = gfxASurface::ImageFormatRGB24;
+    }
+
     layers::renderTraceEventStart("Get surface", "424545");
-    static unsigned char bits2[32 * 32 * 2];
+    static unsigned char bits2[32 * 32 * 4];
     nsRefPtr<gfxImageSurface> targetSurface =
-        new gfxImageSurface(bits2, gfxIntSize(32, 32), 32 * 2,
-                            gfxASurface::ImageFormatRGB16_565);
+        new gfxImageSurface(bits2, gfxIntSize(32, 32), 32 * bytesPerPixel, format);
     layers::renderTraceEventEnd("Get surface", "424545");
 
     layers::renderTraceEventStart("Widget draw to", "434646");
@@ -1667,6 +1687,7 @@ nsWindow::HandleSpecialKey(AndroidGeckoEvent *ae)
     } else {
         switch (keyCode) {
             case AKEYCODE_BACK: {
+                // XXX Where is the keydown event for this??
                 nsKeyEvent pressEvent(true, NS_KEY_PRESS, this);
                 ANPEvent pluginEvent;
                 InitKeyEvent(pressEvent, *ae, &pluginEvent);
@@ -1746,14 +1767,12 @@ nsWindow::OnKeyEvent(AndroidGeckoEvent *ae)
 
     if (Destroyed())
         return;
-    if (!firePress)
+    if (!firePress || status == nsEventStatus_eConsumeNoDefault) {
         return;
+    }
 
     nsKeyEvent pressEvent(true, NS_KEY_PRESS, this);
     InitKeyEvent(pressEvent, *ae, &pluginEvent);
-    if (status == nsEventStatus_eConsumeNoDefault) {
-        pressEvent.mFlags.mDefaultPrevented = true;
-    }
 #ifdef DEBUG_ANDROID_WIDGET
     __android_log_print(ANDROID_LOG_INFO, "Gecko", "Dispatching key pressEvent with keyCode %d charCode %d shift %d alt %d sym/ctrl %d metamask %d", pressEvent.keyCode, pressEvent.charCode, pressEvent.IsShift(), pressEvent.IsAlt(), pressEvent.IsControl(), ae->MetaState());
 #endif
@@ -2347,7 +2366,9 @@ nsWindow::NotifyIMEOfTextChange(uint32_t aStart,
 nsIMEUpdatePreference
 nsWindow::GetIMEUpdatePreference()
 {
-    return nsIMEUpdatePreference(true, true);
+    int8_t notifications = (nsIMEUpdatePreference::NOTIFY_SELECTION_CHANGE |
+                            nsIMEUpdatePreference::NOTIFY_TEXT_CHANGE);
+    return nsIMEUpdatePreference(notifications, true);
 }
 
 void
@@ -2493,7 +2514,7 @@ public:
         Layer* targetLayer = GetLayerManager()->GetPrimaryScrollableLayer();
         AsyncPanZoomController* controller = nsWindow::GetPanZoomController();
         if (targetLayer && targetLayer->AsContainerLayer() && controller) {
-            targetLayer->SetAsyncPanZoomController(controller);
+            targetLayer->AsContainerLayer()->SetAsyncPanZoomController(controller);
             controller->NotifyLayersUpdated(targetLayer->AsContainerLayer()->GetFrameMetrics(), isFirstPaint);
         }
     }

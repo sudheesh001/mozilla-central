@@ -37,6 +37,7 @@
 #include "nsISizeOfEventTarget.h"
 
 #include "mozilla/Assertions.h"
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/TypedArray.h"
 #include "mozilla/dom/XMLHttpRequestBinding.h"
@@ -227,7 +228,7 @@ public:
 
   // nsISizeOfEventTarget
   virtual size_t
-    SizeOfEventTargetIncludingThis(nsMallocSizeOfFun aMallocSizeOf) const;
+    SizeOfEventTargetIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 
   NS_REALLY_FORWARD_NSIDOMEVENTTARGET(nsXHREventTarget)
 
@@ -657,14 +658,14 @@ protected:
 
   bool mFirstStartRequestSeen;
   bool mInLoadProgressEvent;
-  
+
   nsCOMPtr<nsIAsyncVerifyRedirectCallback> mRedirectCallback;
   nsCOMPtr<nsIChannel> mNewRedirectChannel;
-  
-  JS::Value mResultJSON;
+
+  JS::Heap<JS::Value> mResultJSON;
 
   js::ArrayBufferBuilder mArrayBufferBuilder;
-  JSObject* mResultArrayBuffer;
+  JS::Heap<JSObject*> mResultArrayBuffer;
 
   void ResetResponse();
 

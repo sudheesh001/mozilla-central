@@ -59,7 +59,7 @@ ImplCycleCollectionUnlink(nsInterfaceHashtable<K, T>& aField)
 template <typename K, typename T>
 inline void
 ImplCycleCollectionTraverse(nsCycleCollectionTraversalCallback& aCallback,
-                            nsInterfaceHashtable<K, T>& aField,
+                            const nsInterfaceHashtable<K, T>& aField,
                             const char* aName,
                             uint32_t aFlags = 0)
 {
@@ -135,7 +135,7 @@ nsInterfaceHashtable<KeyClass,Interface>::Get(KeyType aKey) const
 {
   typename base_type::EntryType* ent = this->GetEntry(aKey);
   if (!ent)
-    return NULL;
+    return nullptr;
 
   nsCOMPtr<Interface> copy = ent->mData;
   return copy.forget();

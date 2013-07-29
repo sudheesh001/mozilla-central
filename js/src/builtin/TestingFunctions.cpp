@@ -4,21 +4,21 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "builtin/TestingFunctions.h"
+
 #include "jsapi.h"
-#include "jsbool.h"
 #include "jscntxt.h"
-#include "jscompartment.h"
 #include "jsfriendapi.h"
 #include "jsgc.h"
 #include "jsobj.h"
-#include "jsobjinlines.h"
 #include "jsprf.h"
 #include "jswrapper.h"
 
-#include "builtin/TestingFunctions.h"
+#include "ion/AsmJS.h"
 #include "vm/ForkJoin.h"
+#include "vm/Interpreter.h"
 
-#include "vm/Stack-inl.h"
+#include "vm/ObjectImpl-inl.h"
 
 using namespace js;
 using namespace JS;
@@ -31,14 +31,14 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
     RootedObject info(cx, JS_NewObject(cx, NULL, NULL, NULL));
     if (!info)
         return false;
-    Value value;
+    RootedValue value(cx);
 
 #ifdef JSGC_ROOT_ANALYSIS
     value = BooleanValue(true);
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "rooting-analysis", &value))
+    if (!JS_SetProperty(cx, info, "rooting-analysis", value))
         return false;
 
 #ifdef JSGC_USE_EXACT_ROOTING
@@ -46,7 +46,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "exact-rooting", &value))
+    if (!JS_SetProperty(cx, info, "exact-rooting", value))
         return false;
 
 #ifdef DEBUG
@@ -54,7 +54,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "debug", &value))
+    if (!JS_SetProperty(cx, info, "debug", value))
         return false;
 
 #ifdef JS_HAS_CTYPES
@@ -62,7 +62,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "has-ctypes", &value))
+    if (!JS_SetProperty(cx, info, "has-ctypes", value))
         return false;
 
 #ifdef JS_CPU_X86
@@ -70,7 +70,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "x86", &value))
+    if (!JS_SetProperty(cx, info, "x86", value))
         return false;
 
 #ifdef JS_CPU_X64
@@ -78,7 +78,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "x64", &value))
+    if (!JS_SetProperty(cx, info, "x64", value))
         return false;
 
 #ifdef MOZ_ASAN
@@ -86,7 +86,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "asan", &value))
+    if (!JS_SetProperty(cx, info, "asan", value))
         return false;
 
 #ifdef JS_GC_ZEAL
@@ -94,7 +94,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "has-gczeal", &value))
+    if (!JS_SetProperty(cx, info, "has-gczeal", value))
         return false;
 
 #ifdef JS_THREADSAFE
@@ -102,7 +102,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "threadsafe", &value))
+    if (!JS_SetProperty(cx, info, "threadsafe", value))
         return false;
 
 #ifdef JS_MORE_DETERMINISTIC
@@ -110,7 +110,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "more-deterministic", &value))
+    if (!JS_SetProperty(cx, info, "more-deterministic", value))
         return false;
 
 #ifdef MOZ_PROFILING
@@ -118,7 +118,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "profiling", &value))
+    if (!JS_SetProperty(cx, info, "profiling", value))
         return false;
 
 #ifdef INCLUDE_MOZILLA_DTRACE
@@ -126,7 +126,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "dtrace", &value))
+    if (!JS_SetProperty(cx, info, "dtrace", value))
         return false;
 
 #ifdef MOZ_TRACE_JSCALLS
@@ -134,7 +134,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "trace-jscalls-api", &value))
+    if (!JS_SetProperty(cx, info, "trace-jscalls-api", value))
         return false;
 
 #ifdef JSGC_INCREMENTAL
@@ -142,7 +142,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "incremental-gc", &value))
+    if (!JS_SetProperty(cx, info, "incremental-gc", value))
         return false;
 
 #ifdef JSGC_GENERATIONAL
@@ -150,7 +150,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "generational-gc", &value))
+    if (!JS_SetProperty(cx, info, "generational-gc", value))
         return false;
 
 #ifdef MOZ_VALGRIND
@@ -158,7 +158,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "valgrind", &value))
+    if (!JS_SetProperty(cx, info, "valgrind", value))
         return false;
 
 #ifdef JS_OOM_DO_BACKTRACES
@@ -166,7 +166,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "oom-backtraces", &value))
+    if (!JS_SetProperty(cx, info, "oom-backtraces", value))
         return false;
 
 #ifdef ENABLE_PARALLEL_JS
@@ -174,7 +174,15 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "parallelJS", &value))
+    if (!JS_SetProperty(cx, info, "parallelJS", value))
+        return false;
+
+#ifdef ENABLE_BINARYDATA
+    value = BooleanValue(true);
+#else
+    value = BooleanValue(false);
+#endif
+    if (!JS_SetProperty(cx, info, "binary-data", value))
         return false;
 
     *vp = ObjectValue(*info);
@@ -246,7 +254,8 @@ static const struct ParamPair {
     {"maxMallocBytes",      JSGC_MAX_MALLOC_BYTES},
     {"gcBytes",             JSGC_BYTES},
     {"gcNumber",            JSGC_NUMBER},
-    {"sliceTimeBudget",     JSGC_SLICE_TIME_BUDGET}
+    {"sliceTimeBudget",     JSGC_SLICE_TIME_BUDGET},
+    {"markStackLimit",      JSGC_MARK_STACK_LIMIT}
 };
 
 static JSBool
@@ -330,7 +339,7 @@ IsProxy(JSContext *cx, unsigned argc, jsval *vp)
         args.rval().setBoolean(false);
         return true;
     }
-    args.rval().setBoolean(args[0].toObject().isProxy());
+    args.rval().setBoolean(args[0].toObject().is<ProxyObject>());
     return true;
 }
 
@@ -490,7 +499,7 @@ GCState(JSContext *cx, unsigned argc, jsval *vp)
     else if (globalState == gc::SWEEP)
         state = "sweep";
     else
-        JS_NOT_REACHED("Unobserveable global GC state");
+        MOZ_ASSUME_UNREACHABLE("Unobserveable global GC state");
 
     JSString *str = JS_NewStringCopyZ(cx, state);
     if (!str)
@@ -884,13 +893,13 @@ static JSBool
 DisplayName(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    if (argc == 0 || !args[0].isObject() || !args[0].toObject().isFunction()) {
+    if (argc == 0 || !args[0].isObject() || !args[0].toObject().is<JSFunction>()) {
         RootedObject arg(cx, &args.callee());
         ReportUsageError(cx, arg, "Must have one function argument");
         return false;
     }
 
-    JSFunction *fun = args[0].toObject().toFunction();
+    JSFunction *fun = &args[0].toObject().as<JSFunction>();
     JSString *str = fun->displayAtom();
     vp->setString(str == NULL ? cx->runtime()->emptyString : str);
     return true;
@@ -908,18 +917,19 @@ js::testingFunc_inParallelSection(JSContext *cx, unsigned argc, jsval *vp)
 
 static JSObject *objectMetadataFunction = NULL;
 
-static JSObject *
-ShellObjectMetadataCallback(JSContext *cx)
+static bool
+ShellObjectMetadataCallback(JSContext *cx, JSObject **pmetadata)
 {
     Value thisv = UndefinedValue();
 
-    Value rval;
-    if (!Invoke(cx, thisv, ObjectValue(*objectMetadataFunction), 0, NULL, &rval)) {
-        cx->clearPendingException();
-        return NULL;
-    }
+    RootedValue rval(cx);
+    if (!Invoke(cx, thisv, ObjectValue(*objectMetadataFunction), 0, NULL, &rval))
+        return false;
 
-    return rval.isObject() ? &rval.toObject() : NULL;
+    if (rval.isObject())
+        *pmetadata = &rval.toObject();
+
+    return true;
 }
 
 static JSBool
@@ -929,7 +939,7 @@ SetObjectMetadataCallback(JSContext *cx, unsigned argc, jsval *vp)
 
     args.rval().setUndefined();
 
-    if (argc == 0 || !args[0].isObject() || !args[0].toObject().isFunction()) {
+    if (argc == 0 || !args[0].isObject() || !args[0].toObject().is<JSFunction>()) {
         if (objectMetadataFunction)
             JS_RemoveObjectRoot(cx, &objectMetadataFunction);
         objectMetadataFunction = NULL;

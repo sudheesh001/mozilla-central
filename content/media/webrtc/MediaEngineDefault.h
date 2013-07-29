@@ -55,13 +55,12 @@ public:
                           StreamTime aDesiredTime,
                           TrackTicks &aLastEndTime) {}
 
-  NS_DECL_ISUPPORTS
-  NS_DECL_NSITIMERCALLBACK
+  virtual bool IsFake() {
+    return true;
+  }
 
-  static const int DEFAULT_VIDEO_FPS = 60;
-  static const int DEFAULT_VIDEO_MIN_FPS = 10;
-  static const int DEFAULT_VIDEO_WIDTH = 640;
-  static const int DEFAULT_VIDEO_HEIGHT = 480;
+  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_NSITIMERCALLBACK
 
 protected:
   friend class MediaEngineDefault;
@@ -102,7 +101,11 @@ public:
                           StreamTime aDesiredTime,
                           TrackTicks &aLastEndTime) {}
 
-  NS_DECL_ISUPPORTS
+  virtual bool IsFake() {
+    return true;
+  }
+
+  NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSITIMERCALLBACK
 
 protected:
@@ -111,6 +114,7 @@ protected:
 
   SourceMediaStream* mSource;
 };
+
 
 class MediaEngineDefault : public MediaEngine
 {

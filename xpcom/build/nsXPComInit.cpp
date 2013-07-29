@@ -13,7 +13,6 @@
 #include "nsXPCOMPrivate.h"
 #include "nsXPCOMCIDInternal.h"
 
-#include "nsStaticComponents.h"
 #include "prlink.h"
 
 #include "nsCycleCollector.h"
@@ -100,6 +99,7 @@ extern nsresult nsStringInputStreamConstructor(nsISupports *, REFNSIID, void **)
 #include "nsSystemInfo.h"
 #include "nsMemoryReporterManager.h"
 #include "nsMemoryInfoDumper.h"
+#include "nsSecurityConsoleMessage.h"
 #include "nsMessageLoop.h"
 
 #include <locale.h>
@@ -210,6 +210,8 @@ NS_GENERIC_FACTORY_CONSTRUCTOR(nsMemoryInfoDumper)
 
 NS_GENERIC_FACTORY_CONSTRUCTOR(nsIOUtil)
 
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSecurityConsoleMessage)
+
 static nsresult
 nsThreadManagerGetSingleton(nsISupports* outer,
                             const nsIID& aIID,
@@ -241,6 +243,7 @@ nsXPTIInterfaceInfoManagerGetSingleton(nsISupports* outer,
 
 nsComponentManagerImpl* nsComponentManagerImpl::gComponentManager = NULL;
 bool gXPCOMShuttingDown = false;
+bool gXPCOMThreadsShutDown = false;
 
 static NS_DEFINE_CID(kComponentManagerCID, NS_COMPONENTMANAGER_CID);
 static NS_DEFINE_CID(kINIParserFactoryCID, NS_INIPARSERFACTORY_CID);
@@ -248,6 +251,8 @@ static NS_DEFINE_CID(kSimpleUnicharStreamFactoryCID, NS_SIMPLE_UNICHAR_STREAM_FA
 
 NS_DEFINE_NAMED_CID(NS_CHROMEREGISTRY_CID);
 NS_DEFINE_NAMED_CID(NS_CHROMEPROTOCOLHANDLER_CID);
+
+NS_DEFINE_NAMED_CID(NS_SECURITY_CONSOLE_MESSAGE_CID);
 
 NS_GENERIC_FACTORY_SINGLETON_CONSTRUCTOR(nsChromeRegistry,
                                          nsChromeRegistry::GetSingleton)
@@ -283,6 +288,7 @@ const mozilla::Module::CIDEntry kXPCOMCIDEntries[] = {
 #include "XPCOMModule.inc"
     { &kNS_CHROMEREGISTRY_CID, false, NULL, nsChromeRegistryConstructor },
     { &kNS_CHROMEPROTOCOLHANDLER_CID, false, NULL, nsChromeProtocolHandlerConstructor },
+    { &kNS_SECURITY_CONSOLE_MESSAGE_CID, false, NULL, nsSecurityConsoleMessageConstructor },
     { NULL }
 };
 #undef COMPONENT
@@ -293,6 +299,7 @@ const mozilla::Module::ContractIDEntry kXPCOMContracts[] = {
     { NS_CHROMEREGISTRY_CONTRACTID, &kNS_CHROMEREGISTRY_CID },
     { NS_NETWORK_PROTOCOL_CONTRACTID_PREFIX "chrome", &kNS_CHROMEPROTOCOLHANDLER_CID },
     { NS_INIPARSERFACTORY_CONTRACTID, &kINIParserFactoryCID },
+    { NS_SECURITY_CONSOLE_MESSAGE_CONTRACTID, &kNS_SECURITY_CONSOLE_MESSAGE_CID },
     { NULL }
 };
 #undef COMPONENT
@@ -588,6 +595,7 @@ ShutdownXPCOM(nsIServiceManager* servMgr)
                 NotifyObservers(nullptr, NS_XPCOM_SHUTDOWN_THREADS_OBSERVER_ID,
                                 nullptr);
 
+        gXPCOMThreadsShutDown = true;
         nsCycleCollector_shutdownThreads();
 
         NS_ProcessPendingEvents(thread);
@@ -648,8 +656,6 @@ ShutdownXPCOM(nsIServiceManager* servMgr)
     // Release the directory service
     NS_IF_RELEASE(nsDirectoryService::gService);
 
-    nsCycleCollector_shutdown();
-
     if (moduleLoaders) {
         bool more;
         nsCOMPtr<nsISupports> el;
@@ -674,6 +680,8 @@ ShutdownXPCOM(nsIServiceManager* servMgr)
 
         moduleLoaders = nullptr;
     }
+
+    nsCycleCollector_shutdown();
 
     PROFILER_MARKER("Shutdown xpcom");
     // If we are doing any shutdown checks, poison writes.

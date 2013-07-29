@@ -4,10 +4,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef jsion_bitset_h__
-#define jsion_bitset_h__
+#ifndef ion_BitSet_h
+#define ion_BitSet_h
 
-#include "IonAllocPolicy.h"
+#include "mozilla/MathAlgorithms.h"
+
+#include "ion/IonAllocPolicy.h"
 
 namespace js {
 namespace ion {
@@ -150,10 +152,9 @@ class BitSet::Iterator
             value_ = set_.bits_[word_];
         }
 
-        // The result of js_bitscan_ctz32 is undefined if the input is 0.
-        JS_ASSERT(value_ != 0);
-
-        int numZeros = js_bitscan_ctz32(value_);
+        // Be careful: the result of CountTrailingZeroes32 is undefined if the
+        // input is 0.
+        int numZeros = mozilla::CountTrailingZeroes32(value_);
         index_ += numZeros;
         value_ >>= numZeros;
 
@@ -170,4 +171,4 @@ class BitSet::Iterator
 }
 }
 
-#endif
+#endif /* ion_BitSet_h */

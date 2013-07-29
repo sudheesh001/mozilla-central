@@ -9,7 +9,7 @@
 #include "nsCOMPtr.h"
 #include "nsIObserver.h"
 #include "nsXBLDocumentInfo.h"
-#include "nsDataHashtable.h"
+#include "nsJSThingHashtable.h"
 #include "nsInterfaceHashtable.h"
 #include "nsRefPtrHashtable.h"
 #include "nsURIHashKey.h"
@@ -24,11 +24,6 @@
 
 class nsCSSStyleSheet;
 
-struct CacheScriptEntry
-{
-    JSScript*   mScriptObject; // the script object.
-};
-
 /**
  * The XUL prototype cache can be used to store and retrieve shared data for
  * XUL documents, style sheets, XBL, and scripts.
@@ -41,7 +36,7 @@ class nsXULPrototypeCache : public nsIObserver
 {
 public:
     // nsISupports
-    NS_DECL_ISUPPORTS
+    NS_DECL_THREADSAFE_ISUPPORTS
     NS_DECL_NSIOBSERVER
 
     bool IsCached(nsIURI* aURI) {
@@ -128,14 +123,14 @@ protected:
 
     void FlushSkinFiles();
 
-    nsRefPtrHashtable<nsURIHashKey,nsXULPrototypeDocument>  mPrototypeTable; // owns the prototypes
-    nsRefPtrHashtable<nsURIHashKey,nsCSSStyleSheet>        mStyleSheetTable;
-    nsDataHashtable<nsURIHashKey,CacheScriptEntry>         mScriptTable;
-    nsRefPtrHashtable<nsURIHashKey,nsXBLDocumentInfo>  mXBLDocTable;
+    nsRefPtrHashtable<nsURIHashKey,nsXULPrototypeDocument>   mPrototypeTable; // owns the prototypes
+    nsRefPtrHashtable<nsURIHashKey,nsCSSStyleSheet>          mStyleSheetTable;
+    nsJSThingHashtable<nsURIHashKey, JSScript*>              mScriptTable;
+    nsRefPtrHashtable<nsURIHashKey,nsXBLDocumentInfo>        mXBLDocTable;
 
-    nsTHashtable<nsURIHashKey> mCacheURITable;
+    nsTHashtable<nsURIHashKey>                               mCacheURITable;
 
-    nsInterfaceHashtable<nsURIHashKey, nsIStorageStream> mOutputStreamTable;
+    nsInterfaceHashtable<nsURIHashKey, nsIStorageStream>     mOutputStreamTable;
     nsInterfaceHashtable<nsURIHashKey, nsIObjectInputStream> mInputStreamTable;
 
     // Bootstrap caching service

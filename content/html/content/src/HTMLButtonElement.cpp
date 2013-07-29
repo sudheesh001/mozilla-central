@@ -29,7 +29,7 @@
 #include "nsPresState.h"
 #include "nsError.h"
 #include "nsFocusManager.h"
-#include "nsHTMLFormElement.h"
+#include "mozilla/dom/HTMLFormElement.h"
 #include "mozAutoDocUpdate.h"
 
 #define NS_IN_SUBMIT_CLICK      (1 << 0)
@@ -65,8 +65,6 @@ HTMLButtonElement::HTMLButtonElement(already_AddRefed<nsINodeInfo> aNodeInfo,
 
   // Set up our default state: enabled
   AddStatesSilently(NS_EVENT_STATE_ENABLED);
-
-  SetIsDOMBinding();
 }
 
 HTMLButtonElement::~HTMLButtonElement()
@@ -371,7 +369,7 @@ HTMLButtonElement::PostHandleEvent(nsEventChainPostVisitor& aVisitor)
           // TODO: removing this code and have the submit event sent by the form
           // see bug 592124.
           // Hold a strong ref while dispatching
-          nsRefPtr<nsHTMLFormElement> form(mForm);
+          nsRefPtr<HTMLFormElement> form(mForm);
           presShell->HandleDOMEventWithTarget(mForm, &event, &status);
           aVisitor.mEventStatus = nsEventStatus_eConsumeNoDefault;
         }
@@ -507,15 +505,14 @@ HTMLButtonElement::SaveState()
     return NS_OK;
   }
   
-  nsPresState *state = nullptr;
-  nsresult rv = GetPrimaryPresState(this, &state);
+  nsPresState* state = GetPrimaryPresState();
   if (state) {
     // We do not want to save the real disabled state but the disabled
     // attribute.
     state->SetDisabled(HasAttr(kNameSpaceID_None, nsGkAtoms::disabled));
   }
 
-  return rv;
+  return NS_OK;
 }
 
 bool

@@ -87,7 +87,7 @@ typedef struct AndroidSystemColors {
 
 class nsFilePickerCallback : nsISupports {
 public:
-    NS_DECL_ISUPPORTS
+    NS_DECL_THREADSAFE_ISUPPORTS
     virtual void handleResult(nsAString& filePath) = 0;
     nsFilePickerCallback() {}
 protected:
@@ -256,6 +256,7 @@ public:
     void CloseNotification(const nsAString& aAlertName);
 
     int GetDPI();
+    int GetScreenDepth();
 
     void ShowFilePickerForExtensions(nsAString& aFilePath, const nsAString& aExtensions);
     void ShowFilePickerForMimeType(nsAString& aFilePath, const nsAString& aMimeType);
@@ -371,14 +372,14 @@ public:
     void EnableNetworkNotifications();
     void DisableNetworkNotifications();
 
-    void SetFirstPaintViewport(const LayerIntPoint& aOffset, float aZoom, const CSSRect& aCssPageRect);
+    void SetFirstPaintViewport(const LayerIntPoint& aOffset, const CSSToLayerScale& aZoom, const CSSRect& aCssPageRect);
     void SetPageRect(const CSSRect& aCssPageRect);
-    void SyncViewportInfo(const LayerIntRect& aDisplayPort, float aDisplayResolution, bool aLayersUpdated,
-                          ScreenPoint& aScrollOffset, float& aScaleX, float& aScaleY,
-                          gfx::Margin& aFixedLayerMargins, ScreenPoint& aOffset);
-    void SyncFrameMetrics(const gfx::Point& aScrollOffset, float aZoom, const CSSRect& aCssPageRect,
-                          bool aLayersUpdated, const CSSRect& aDisplayPort, float aDisplayResolution,
-                          bool aIsFirstPaint, gfx::Margin& aFixedLayerMargins, ScreenPoint& aOffset);
+    void SyncViewportInfo(const LayerIntRect& aDisplayPort, const CSSToLayerScale& aDisplayResolution,
+                          bool aLayersUpdated, ScreenPoint& aScrollOffset, CSSToScreenScale& aScale,
+                          LayerMargin& aFixedLayerMargins, ScreenPoint& aOffset);
+    void SyncFrameMetrics(const ScreenPoint& aScrollOffset, float aZoom, const CSSRect& aCssPageRect,
+                          bool aLayersUpdated, const CSSRect& aDisplayPort, const CSSToLayerScale& aDisplayResolution,
+                          bool aIsFirstPaint, LayerMargin& aFixedLayerMargins, ScreenPoint& aOffset);
 
     void AddPluginView(jobject view, const gfxRect& rect, bool isFullScreen);
     void RemovePluginView(jobject view, bool isFullScreen);
@@ -482,6 +483,7 @@ protected:
     jmethodID jAlertsProgressListener_OnProgress;
     jmethodID jCloseNotification;
     jmethodID jGetDpi;
+    jmethodID jGetScreenDepth;
     jmethodID jSetFullScreen;
     jmethodID jShowInputMethodPicker;
     jmethodID jNotifyDefaultPrevented;

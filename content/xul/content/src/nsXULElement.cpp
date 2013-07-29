@@ -167,8 +167,6 @@ nsXULElement::nsXULElement(already_AddRefed<nsINodeInfo> aNodeInfo)
 {
     XUL_PROTOTYPE_ATTRIBUTE_METER(gNumElements);
 
-    SetIsDOMBinding();
-
     // We may be READWRITE by default; check.
     if (IsReadWriteTextElement()) {
         AddStatesSilently(NS_EVENT_STATE_MOZ_READWRITE);
@@ -2382,9 +2380,15 @@ nsXULPrototypeScript::Serialize(nsIObjectOutputStream* aStream,
     if (NS_FAILED(rv)) return rv;
     rv = aStream->Write32(mLangVersion);
     if (NS_FAILED(rv)) return rv;
-    // And delegate the writing to the nsIScriptContext
-    rv = context->Serialize(aStream,
-                            JS::Handle<JSScript*>::fromMarkedLocation(&mScriptObject));
+
+    // And delegate the writing to the nsIScriptContext.
+    //
+    // Calling fromMarkedLocation() is safe because we trace mScriptObject in
+    // TraceScriptObject() and because its value is never changed after it has
+    // been set.
+    JS::Handle<JSScript*> script =
+        JS::Handle<JSScript*>::fromMarkedLocation(mScriptObject.address());
+    rv = context->Serialize(aStream, script);
     if (NS_FAILED(rv)) return rv;
 
     return NS_OK;
@@ -2409,8 +2413,7 @@ nsXULPrototypeScript::SerializeOutOfLine(nsIObjectOutputStream* aStream,
                  "writing to the cache file, but the XUL cache is off?");
     bool exists;
     cache->HasData(mSrcURI, &exists);
-    
-    
+
     /* return will be NS_OK from GetAsciiSpec.
      * that makes no sense.
      * nor does returning NS_OK from HasMuxedDocument.
@@ -2457,6 +2460,7 @@ nsXULPrototypeScript::Deserialize(nsIObjectInputStream* aStream,
     nsIScriptContext *context = aGlobal->GetScriptContext();
     NS_ASSERTION(context != nullptr, "Have no context for deserialization");
     NS_ENSURE_TRUE(context, NS_ERROR_UNEXPECTED);
+    JSAutoRequest ar(context->GetNativeContext());
     JS::Rooted<JSScript*> newScriptObject(context->GetNativeContext());
     rv = context->Deserialize(aStream, &newScriptObject);
     if (NS_FAILED(rv)) {
@@ -2572,6 +2576,7 @@ nsXULPrototypeScript::Compile(const PRUnichar* aText,
 
     // Ok, compile it to create a prototype script object!
 
+    JSAutoRequest ar(context->GetNativeContext());
     JS::Rooted<JSScript*> newScriptObject(context->GetNativeContext());
 
     // If the script was inline, tell the JS parser to save source for

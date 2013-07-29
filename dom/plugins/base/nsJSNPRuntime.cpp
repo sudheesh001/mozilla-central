@@ -109,28 +109,28 @@ NPClass nsJSObjWrapper::sJSObjWrapperNPClass =
   };
 
 static JSBool
-NPObjWrapper_AddProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSMutableHandleValue vp);
+NPObjWrapper_AddProperty(JSContext *cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id, JS::MutableHandle<JS::Value> vp);
 
 static JSBool
-NPObjWrapper_DelProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool *succeeded);
+NPObjWrapper_DelProperty(JSContext *cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id, JSBool *succeeded);
 
 static JSBool
-NPObjWrapper_SetProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict,
-                         JSMutableHandleValue vp);
+NPObjWrapper_SetProperty(JSContext *cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id, JSBool strict,
+                         JS::MutableHandle<JS::Value> vp);
 
 static JSBool
-NPObjWrapper_GetProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSMutableHandleValue vp);
+NPObjWrapper_GetProperty(JSContext *cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id, JS::MutableHandle<JS::Value> vp);
 
 static JSBool
-NPObjWrapper_newEnumerate(JSContext *cx, JSHandleObject obj, JSIterateOp enum_op,
+NPObjWrapper_newEnumerate(JSContext *cx, JS::Handle<JSObject*> obj, JSIterateOp enum_op,
                           JS::Value *statep, jsid *idp);
 
 static JSBool
-NPObjWrapper_NewResolve(JSContext *cx, JSHandleObject obj, JSHandleId id, unsigned flags,
+NPObjWrapper_NewResolve(JSContext *cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id, unsigned flags,
                         JS::MutableHandle<JSObject*> objp);
 
 static JSBool
-NPObjWrapper_Convert(JSContext *cx, JSHandleObject obj, JSType type, JSMutableHandleValue vp);
+NPObjWrapper_Convert(JSContext *cx, JS::Handle<JSObject*> obj, JSType type, JS::MutableHandle<JS::Value> vp);
 
 static void
 NPObjWrapper_Finalize(JSFreeOp *fop, JSObject *obj);
@@ -164,14 +164,14 @@ JSClass sNPObjectJSWrapperClass =
   };
 
 typedef struct NPObjectMemberPrivate {
-    JSObject *npobjWrapper;
-    JS::Value fieldValue;
-    NPIdentifier methodName;
+    JS::Heap<JSObject *> npobjWrapper;
+    JS::Heap<JS::Value> fieldValue;
+    JS::Heap<jsid> methodName;
     NPP   npp;
 } NPObjectMemberPrivate;
 
 static JSBool
-NPObjectMember_Convert(JSContext *cx, JSHandleObject obj, JSType type, JSMutableHandleValue vp);
+NPObjectMember_Convert(JSContext *cx, JS::Handle<JSObject*> obj, JSType type, JS::MutableHandle<JS::Value> vp);
 
 static void
 NPObjectMember_Finalize(JSFreeOp *fop, JSObject *obj);
@@ -196,7 +196,7 @@ static void
 OnWrapperDestroyed();
 
 static void
-DelayedReleaseGCCallback(JSRuntime* rt, JSGCStatus status)
+DelayedReleaseGCCallback(JSGCStatus status)
 {
   if (JSGC_END == status) {
     // Take ownership of sDelayedReleases and null it out now. The
@@ -601,11 +601,11 @@ doInvoke(NPObject *npobj, NPIdentifier method, const NPVariant *args,
   VOID_TO_NPVARIANT(*result);
 
   nsJSObjWrapper *npjsobj = (nsJSObjWrapper *)npobj;
-  JS::Rooted<JS::Value> fv(cx);
 
   nsCxPusher pusher;
   pusher.Push(cx);
   JSAutoCompartment ac(cx, npjsobj->mJSObj);
+  JS::Rooted<JS::Value> fv(cx);
 
   AutoJSExceptionReporter reporter(cx);
 
@@ -787,8 +787,7 @@ nsJSObjWrapper::NP_SetProperty(NPObject *npobj, NPIdentifier id,
 
   NS_ASSERTION(NPIdentifierIsInt(id) || NPIdentifierIsString(id),
                "id must be either string or int!\n");
-  ok = ::JS_SetPropertyById(cx, npjsobj->mJSObj, NPIdentifierToJSId(id),
-                            v.address());
+  ok = ::JS_SetPropertyById(cx, npjsobj->mJSObj, NPIdentifierToJSId(id), v);
 
   // return ok == JS_TRUE to quiet down compiler warning, even if
   // return ok is what we really want.
@@ -1108,7 +1107,7 @@ GetNPObject(JSContext *cx, JSObject *obj)
 // Does not actually add a property because this is always followed by a
 // SetProperty call.
 static JSBool
-NPObjWrapper_AddProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSMutableHandleValue vp)
+NPObjWrapper_AddProperty(JSContext *cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id, JS::MutableHandle<JS::Value> vp)
 {
   NPObject *npobj = GetNPObject(cx, obj);
 
@@ -1149,7 +1148,7 @@ NPObjWrapper_AddProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSMut
 }
 
 static JSBool
-NPObjWrapper_DelProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool *succeeded)
+NPObjWrapper_DelProperty(JSContext *cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id, JSBool *succeeded)
 {
   NPObject *npobj = GetNPObject(cx, obj);
 
@@ -1182,8 +1181,8 @@ NPObjWrapper_DelProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBoo
 }
 
 static JSBool
-NPObjWrapper_SetProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict,
-                         JSMutableHandleValue vp)
+NPObjWrapper_SetProperty(JSContext *cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id, JSBool strict,
+                         JS::MutableHandle<JS::Value> vp)
 {
   NPObject *npobj = GetNPObject(cx, obj);
 
@@ -1242,7 +1241,7 @@ NPObjWrapper_SetProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBoo
 }
 
 static JSBool
-NPObjWrapper_GetProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSMutableHandleValue vp)
+NPObjWrapper_GetProperty(JSContext *cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id, JS::MutableHandle<JS::Value> vp)
 {
   NPObject *npobj = GetNPObject(cx, obj);
 
@@ -1472,7 +1471,7 @@ struct NPObjectEnumerateState {
 };
 
 static JSBool
-NPObjWrapper_newEnumerate(JSContext *cx, JSHandleObject obj, JSIterateOp enum_op,
+NPObjWrapper_newEnumerate(JSContext *cx, JS::Handle<JSObject*> obj, JSIterateOp enum_op,
                           JS::Value *statep, jsid *idp)
 {
   NPObject *npobj = GetNPObject(cx, obj);
@@ -1552,7 +1551,7 @@ NPObjWrapper_newEnumerate(JSContext *cx, JSHandleObject obj, JSIterateOp enum_op
 }
 
 static JSBool
-NPObjWrapper_NewResolve(JSContext *cx, JSHandleObject obj, JSHandleId id, unsigned flags,
+NPObjWrapper_NewResolve(JSContext *cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id, unsigned flags,
                         JS::MutableHandle<JSObject*> objp)
 {
   NPObject *npobj = GetNPObject(cx, obj);
@@ -1606,7 +1605,7 @@ NPObjWrapper_NewResolve(JSContext *cx, JSHandleObject obj, JSHandleId id, unsign
 }
 
 static JSBool
-NPObjWrapper_Convert(JSContext *cx, JSHandleObject obj, JSType hint, JSMutableHandleValue vp)
+NPObjWrapper_Convert(JSContext *cx, JS::Handle<JSObject*> obj, JSType hint, JS::MutableHandle<JS::Value> vp)
 {
   JS_ASSERT(hint == JSTYPE_NUMBER || hint == JSTYPE_STRING || hint == JSTYPE_VOID);
 
@@ -2017,7 +2016,7 @@ CreateNPObjectMember(NPP npp, JSContext *cx, JSObject *obj, NPObject* npobj,
   memberPrivate->npobjWrapper = obj;
 
   memberPrivate->fieldValue = fieldValue;
-  memberPrivate->methodName = identifier;
+  memberPrivate->methodName = id;
   memberPrivate->npp = npp;
 
   ::JS_RemoveValueRoot(cx, vp);
@@ -2026,7 +2025,7 @@ CreateNPObjectMember(NPP npp, JSContext *cx, JSObject *obj, NPObject* npobj,
 }
 
 static JSBool
-NPObjectMember_Convert(JSContext *cx, JSHandleObject obj, JSType type, JSMutableHandleValue vp)
+NPObjectMember_Convert(JSContext *cx, JS::Handle<JSObject*> obj, JSType type, JS::MutableHandle<JS::Value> vp)
 {
   NPObjectMemberPrivate *memberPrivate =
     (NPObjectMemberPrivate *)::JS_GetInstancePrivate(cx, obj,
@@ -2124,7 +2123,7 @@ NPObjectMember_Call(JSContext *cx, unsigned argc, JS::Value *vp)
 
   NPVariant npv;
   JSBool ok;
-  ok = npobj->_class->invoke(npobj, memberPrivate->methodName,
+  ok = npobj->_class->invoke(npobj, JSIdToNPIdentifier(memberPrivate->methodName),
                              npargs, argc, &npv);
 
   // Release arguments.
@@ -2162,20 +2161,18 @@ NPObjectMember_Trace(JSTracer *trc, JSObject *obj)
     return;
 
   // Our NPIdentifier is not always interned, so we must root it explicitly.
-  jsid id = NPIdentifierToJSId(memberPrivate->methodName);
-  JS_CallIdTracer(trc, &id, "NPObjectMemberPrivate.methodName");
-  memberPrivate->methodName = JSIdToNPIdentifier(id);
+  JS_CallHeapIdTracer(trc, &memberPrivate->methodName, "NPObjectMemberPrivate.methodName");
 
   if (!JSVAL_IS_PRIMITIVE(memberPrivate->fieldValue)) {
-    JS_CallValueTracer(trc, &memberPrivate->fieldValue,
-                       "NPObject Member => fieldValue");
+    JS_CallHeapValueTracer(trc, &memberPrivate->fieldValue,
+                           "NPObject Member => fieldValue");
   }
 
   // There's no strong reference from our private data to the
   // NPObject, so make sure to mark the NPObject wrapper to keep the
   // NPObject alive as long as this NPObjectMember is alive.
   if (memberPrivate->npobjWrapper) {
-    JS_CallObjectTracer(trc, &memberPrivate->npobjWrapper,
-                        "NPObject Member => npobjWrapper");
+    JS_CallHeapObjectTracer(trc, &memberPrivate->npobjWrapper,
+                            "NPObject Member => npobjWrapper");
   }
 }

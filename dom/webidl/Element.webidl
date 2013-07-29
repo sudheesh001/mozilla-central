@@ -55,18 +55,19 @@ interface Element : Node {
   HTMLCollection getElementsByTagNameNS(DOMString? namespace, DOMString localName);
   HTMLCollection getElementsByClassName(DOMString classNames);
 
-  [Constant]
-  readonly attribute HTMLCollection children;
-  [Pure]
-  readonly attribute Element? firstElementChild;
-  [Pure]
-  readonly attribute Element? lastElementChild;
-  [Pure]
-  readonly attribute Element? previousElementSibling;
-  [Pure]
-  readonly attribute Element? nextElementSibling;
-  [Pure]
-  readonly attribute unsigned long childElementCount;
+  /**
+   * The ratio of font-size-inflated text font size to computed font
+   * size for this element. This will query the element for its primary frame,
+   * and then use this to get font size inflation information about the frame.
+   * This will be 1.0 if font size inflation is not enabled, and -1.0 if an
+   * error occurred during the retrieval of the font size inflation.
+   *
+   * @note The font size inflation ratio that is returned is actually the
+   *       font size inflation data for the element's _primary frame_, not the
+   *       element itself, but for most purposes, this should be sufficient.
+   */
+  [ChromeOnly]
+  readonly attribute float fontSizeInflation;
 
   // Mozilla specific stuff
 
@@ -185,3 +186,4 @@ partial interface Element {
 };
 
 Element implements ChildNode;
+Element implements ParentNode;

@@ -25,12 +25,12 @@
 #include "nsIScriptGlobalObject.h"
 #include "nsIContent.h"
 #include "nsEventListenerManager.h"
-#include "nsIDOMNodeSelector.h"
 #include "nsIPrincipal.h"
 #include "nsIParser.h"
 #include "nsBindingManager.h"
 #include "nsINodeInfo.h"
 #include "nsInterfaceHashtable.h"
+#include "nsJSThingHashtable.h"
 #include "nsIBoxObject.h"
 #include "nsPIBoxObject.h"
 #include "nsIScriptObjectPrincipal.h"
@@ -60,8 +60,8 @@
 #include "nsIProgressEventSink.h"
 #include "nsISecurityEventSink.h"
 #include "nsIChannelEventSink.h"
-#include "nsIDocumentRegister.h"
 #include "imgIRequest.h"
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/dom/DOMImplementation.h"
 #include "nsIDOMTouchEvent.h"
 #include "nsIInlineEventHandlers.h"
@@ -94,6 +94,7 @@ class nsWindowSizes;
 class nsHtml5TreeOpExecutor;
 class nsDocumentOnStack;
 class nsPointerLockPermissionRequest;
+class nsISecurityConsoleMessage;
 
 namespace mozilla {
 namespace dom {
@@ -224,7 +225,7 @@ public:
   };
 
   static size_t SizeOfExcludingThis(nsIdentifierMapEntry* aEntry,
-                                    nsMallocSizeOfFun aMallocSizeOf,
+                                    mozilla::MallocSizeOf aMallocSizeOf,
                                     void* aArg);
 
 private:
@@ -503,9 +504,7 @@ class nsDocument : public nsIDocument,
                    public nsIRadioGroupContainer,
                    public nsIApplicationCacheContainer,
                    public nsStubMutationObserver,
-                   public nsIDOMDocumentTouch,
                    public nsIInlineEventHandlers,
-                   public nsIDocumentRegister,
                    public nsIObserver
 {
 public:
@@ -641,20 +640,6 @@ public:
     return mChannel;
   }
 
-  /**
-   * Get this document's inline style sheet.  May return null if there
-   * isn't one
-   */
-  virtual nsHTMLCSSStyleSheet* GetInlineStyleSheet() const MOZ_OVERRIDE {
-    return mStyleAttrStyleSheet;
-  }
-  
-  /**
-   * Set the object from which a document can get a script context.
-   * This is the context within which all scripts (during document
-   * creation and during event handling) will run.
-   */
-  virtual nsIScriptGlobalObject* GetScriptGlobalObject() const MOZ_OVERRIDE;
   virtual void SetScriptGlobalObject(nsIScriptGlobalObject* aGlobalObject) MOZ_OVERRIDE;
 
   virtual void SetScriptHandlingObject(nsIScriptGlobalObject* aScriptObject) MOZ_OVERRIDE;
@@ -770,6 +755,7 @@ public:
 
 private:
   nsRadioGroupStruct* GetRadioGroupInternal(const nsAString& aName) const;
+  void SendToConsole(nsCOMArray<nsISecurityConsoleMessage>& aMessages);
 
 public:
   // nsIDOMNode
@@ -795,17 +781,8 @@ public:
   // nsIApplicationCacheContainer
   NS_DECL_NSIAPPLICATIONCACHECONTAINER
 
-  // nsITouchEventReceiver
-  NS_DECL_NSITOUCHEVENTRECEIVER
-
-  // nsIDOMDocumentTouch
-  NS_DECL_NSIDOMDOCUMENTTOUCH
-
   // nsIInlineEventHandlers
   NS_DECL_NSIINLINEEVENTHANDLERS
-
-  // nsIDocumentRegister
-  NS_DECL_NSIDOCUMENTREGISTER
 
   // nsIObserver
   NS_DECL_NSIOBSERVER
@@ -836,10 +813,6 @@ public:
   already_AddRefed<nsIBoxObject> GetBoxObjectFor(mozilla::dom::Element* aElement,
                                                  mozilla::ErrorResult& aRv) MOZ_OVERRIDE;
 
-  virtual NS_HIDDEN_(nsresult) GetXBLChildNodesFor(nsIContent* aContent,
-                                                   nsIDOMNodeList** aResult);
-  virtual NS_HIDDEN_(nsresult) GetContentListFor(nsIContent* aContent,
-                                                 nsIDOMNodeList** aResult);
   virtual NS_HIDDEN_(Element*)
     GetAnonymousElementByAttribute(nsIContent* aElement,
                                    nsIAtom* aAttrName,
@@ -1139,6 +1112,12 @@ public:
 
   static void XPCOMShutdown();
 
+  bool mIsTopLevelContentDocument:1;
+
+  bool IsTopLevelContentDocument();
+
+  void SetIsTopLevelContentDocument(bool aIsTopLevelContentDocument);
+
   js::ExpandoAndGeneration mExpandoAndGeneration;
 
 protected:
@@ -1216,7 +1195,7 @@ protected:
 
   // Hashtable for custom element prototypes in web components.
   // Custom prototypes are in the document's compartment.
-  nsDataHashtable<nsStringHashKey, JSObject*> mCustomPrototypes;
+  nsJSThingHashtable<nsStringHashKey, JSObject*> mCustomPrototypes;
 
   nsRefPtr<nsEventListenerManager> mListenerManager;
   nsCOMPtr<nsIDOMStyleSheetList> mDOMStyleSheets;
@@ -1305,10 +1284,6 @@ protected:
   uint8_t mXMLDeclarationBits;
 
   nsInterfaceHashtable<nsPtrHashKey<nsIContent>, nsPIBoxObject> *mBoxObjectTable;
-
-  // The channel that got passed to StartDocumentLoad(), if any
-  nsCOMPtr<nsIChannel> mChannel;
-  nsRefPtr<nsHTMLCSSStyleSheet> mStyleAttrStyleSheet;
 
   // A document "without a browsing context" that owns the content of
   // HTMLTemplateElement.

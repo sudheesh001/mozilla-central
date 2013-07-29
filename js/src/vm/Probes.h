@@ -4,16 +4,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef Probes_h__
-#define Probes_h__
-
-#include "jspubtd.h"
-#include "jsobj.h"
-#include "vm/Stack.h"
+#ifndef vm_Probes_h
+#define vm_Probes_h
 
 #ifdef INCLUDE_MOZILLA_DTRACE
 #include "javascript-trace.h"
 #endif
+
+#include "jsobj.h"
+#include "jspubtd.h"
+
+#include "vm/Stack.h"
 
 namespace js {
 
@@ -83,7 +84,7 @@ bool stopExecution(JSScript *script);
 /*
  * Object has been created. |obj| must exist (its class and size are read)
  */
-bool createObject(JSContext *cx, JSObject *obj);
+bool createObject(ExclusiveContext *cx, JSObject *obj);
 
 /*
  * Object is about to be finalized. |obj| must still exist (its class is
@@ -139,7 +140,7 @@ static const char *ObjectClassname(JSObject *obj) {
 #endif
 
 inline bool
-Probes::createObject(JSContext *cx, JSObject *obj)
+Probes::createObject(ExclusiveContext *cx, JSObject *obj)
 {
     bool ok = true;
 
@@ -170,4 +171,4 @@ Probes::finalizeObject(JSObject *obj)
 
 } /* namespace js */
 
-#endif  // Probes_h__
+#endif /* vm_Probes_h */

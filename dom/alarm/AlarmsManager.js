@@ -35,7 +35,9 @@ AlarmsManager.prototype = {
 
   classID : ALARMSMANAGER_CID,
 
-  QueryInterface : XPCOMUtils.generateQI([nsIDOMMozAlarmsManager, Ci.nsIDOMGlobalPropertyInitializer]),
+  QueryInterface : XPCOMUtils.generateQI([nsIDOMMozAlarmsManager,
+                                          Ci.nsIDOMGlobalPropertyInitializer,
+                                          Ci.nsISupportsWeakReference]),
 
   classInfo : XPCOMUtils.generateCI({ classID: ALARMSMANAGER_CID,
                                       contractID: ALARMSMANAGER_CONTRACTID,
@@ -51,6 +53,10 @@ AlarmsManager.prototype = {
       throw Components.results.NS_ERROR_FAILURE;
     }
 
+    if (!aDate) {
+      throw Components.results.NS_ERROR_INVALID_ARG;
+    }
+
     let isIgnoreTimezone = true;
     switch (aRespectTimezone) {
       case "honorTimezone":
@@ -62,13 +68,13 @@ AlarmsManager.prototype = {
         break;
 
       default:
-        throw Components.results.NS_ERROR_NOT_IMPLEMENTED;
+        throw Components.results.NS_ERROR_INVALID_ARG;
         break;
     }
 
     let request = this.createRequest();
     this._cpmm.sendAsyncMessage(
-      "AlarmsManager:Add", 
+      "AlarmsManager:Add",
       { requestId: this.getRequestId(request),
         date: aDate,
         ignoreTimezone: isIgnoreTimezone,
@@ -162,7 +168,7 @@ AlarmsManager.prototype = {
     this._cpmm = Cc["@mozilla.org/childprocessmessagemanager;1"].getService(Ci.nsISyncMessageSender);
 
     // Add the valid messages to be listened.
-    this.initHelper(aWindow, ["AlarmsManager:Add:Return:OK", "AlarmsManager:Add:Return:KO", 
+    this.initDOMRequestHelper(aWindow, ["AlarmsManager:Add:Return:OK", "AlarmsManager:Add:Return:KO",
                               "AlarmsManager:GetAll:Return:OK", "AlarmsManager:GetAll:Return:KO"]);
 
     // Get the manifest URL if this is an installed app

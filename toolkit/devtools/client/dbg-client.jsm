@@ -12,6 +12,7 @@ const Cr = Components.results;
 
 this.EXPORTED_SYMBOLS = ["DebuggerTransport",
                          "DebuggerClient",
+                         "RootClient",
                          "debuggerSocketConnect",
                          "LongStringClient",
                          "GripClient"];
@@ -19,8 +20,9 @@ this.EXPORTED_SYMBOLS = ["DebuggerTransport",
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/NetUtil.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
-Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js");
-const { defer, resolve, reject } = Promise;
+Cu.import("resource://gre/modules/Timer.jsm");
+let promise = Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js").Promise;
+const { defer, resolve, reject } = promise;
 
 XPCOMUtils.defineLazyServiceGetter(this, "socketTransportService",
                                    "@mozilla.org/network/socket-transport-service;1",
@@ -30,7 +32,7 @@ XPCOMUtils.defineLazyModuleGetter(this, "WebConsoleClient",
                                   "resource://gre/modules/devtools/WebConsoleClient.jsm");
 
 Components.utils.import("resource://gre/modules/devtools/DevToolsUtils.jsm");
-var { makeInfallible } = DevToolsUtils;
+this.makeInfallible = DevToolsUtils.makeInfallible;
 
 let wantLogging = Services.prefs.getBoolPref("devtools.debugger.log");
 
@@ -87,11 +89,9 @@ function eventSource(aProto) {
    *        Called when the event is fired.
    */
   aProto.addOneTimeListener = function EV_addOneTimeListener(aName, aListener) {
-    let self = this;
-
-    let l = function() {
-      self.removeListener(aName, l);
-      aListener.apply(null, arguments);
+    let l = (...args) => {
+      this.removeListener(aName, l);
+      aListener.apply(null, args);
     };
     this.addListener(aName, l);
   };
@@ -200,11 +200,10 @@ const UnsolicitedPauses = {
   "resumeLimit": "resumeLimit",
   "debuggerStatement": "debuggerStatement",
   "breakpoint": "breakpoint",
+  "DOMEvent": "DOMEvent",
   "watchpoint": "watchpoint",
   "exception": "exception"
 };
-
-const ROOT_ACTOR_NAME = "root";
 
 /**
  * Creates a client for the remote debugging protocol server. This client
@@ -220,7 +219,7 @@ this.DebuggerClient = function DebuggerClient(aTransport)
   this._consoleClients = {};
 
   this._pendingRequests = [];
-  this._activeRequests = {};
+  this._activeRequests = new Map;
   this._eventsEnabled = true;
 
   this.compat = new ProtocolCompatibility(this, [
@@ -228,6 +227,17 @@ this.DebuggerClient = function DebuggerClient(aTransport)
   ]);
 
   this.request = this.request.bind(this);
+  this.localTransport = (this._transport instanceof LocalDebuggerTransport);
+
+  /*
+   * As the first thing on the connection, expect a greeting packet from
+   * the connection's root actor.
+   */
+  this.mainRoot = null;
+  this.expectReply("root", (aPacket) => {
+    this.mainRoot = new RootClient(this, aPacket);
+    this.notify("connected", aPacket.applicationType, aPacket.traits);
+  });
 }
 
 /**
@@ -292,7 +302,14 @@ DebuggerClient.requester = function DC_requester(aPacketSkeleton, { telemetry,
       // The callback is always the last parameter.
       let thisCallback = args[maxPosition + 1];
       if (thisCallback) {
-        thisCallback(aResponse);
+        try {
+          thisCallback(aResponse);
+        } catch (e) {
+          let msg = "Error executing callback passed to debugger client: "
+            + e + "\n" + e.stack;
+          dumpn(msg);
+          Cu.reportError(msg);
+        }
       }
 
       if (histogram) {
@@ -312,7 +329,7 @@ DebuggerClient.Argument = function DCP(aPosition) {
 };
 
 DebuggerClient.Argument.prototype.getArgument = function DCP_getArgument(aParams) {
-  if (!this.position in aParams) {
+  if (!(this.position in aParams)) {
     throw new Error("Bad index into params: " + this.position);
   }
   return aParams[this.position];
@@ -354,6 +371,10 @@ DebuggerClient.prototype = {
       });
     }
 
+    // In this function, we're using the hoisting behavior of nested
+    // function definitions to write the code in the order it will actually
+    // execute. So converting to arrow functions to get rid of 'self' would
+    // be unhelpful here.
     let self = this;
 
     let continuation = function () {
@@ -389,18 +410,11 @@ DebuggerClient.prototype = {
     }
   },
 
-  /**
-   * List the open tabs.
-   *
-   * @param function aOnResponse
-   *        Called with the response packet.
+  /*
+   * This function exists only to preserve DebuggerClient's interface;
+   * new code should say 'client.mainRoot.listTabs()'.
    */
-  listTabs: DebuggerClient.requester({
-    to: ROOT_ACTOR_NAME,
-    type: "listTabs"
-  }, {
-    telemetry: "LISTTABS"
-  }),
+  listTabs: function(aOnResponse) { return this.mainRoot.listTabs(aOnResponse); },
 
   /**
    * Attach to a tab actor.
@@ -412,17 +426,16 @@ DebuggerClient.prototype = {
    *        (which will be undefined on error).
    */
   attachTab: function DC_attachTab(aTabActor, aOnResponse) {
-    let self = this;
     let packet = {
       to: aTabActor,
       type: "attach"
     };
-    this.request(packet, function(aResponse) {
+    this.request(packet, (aResponse) => {
       let tabClient;
       if (!aResponse.error) {
-        tabClient = new TabClient(self, aTabActor);
-        self._tabClients[aTabActor] = tabClient;
-        self.activeTab = tabClient;
+        tabClient = new TabClient(this, aTabActor);
+        this._tabClients[aTabActor] = tabClient;
+        this.activeTab = tabClient;
       }
       aOnResponse(aResponse, tabClient);
     });
@@ -441,18 +454,17 @@ DebuggerClient.prototype = {
    */
   attachConsole:
   function DC_attachConsole(aConsoleActor, aListeners, aOnResponse) {
-    let self = this;
     let packet = {
       to: aConsoleActor,
       type: "startListeners",
       listeners: aListeners,
     };
 
-    this.request(packet, function(aResponse) {
+    this.request(packet, (aResponse) => {
       let consoleClient;
       if (!aResponse.error) {
-        consoleClient = new WebConsoleClient(self, aConsoleActor);
-        self._consoleClients[aConsoleActor] = consoleClient;
+        consoleClient = new WebConsoleClient(this, aConsoleActor);
+        this._consoleClients[aConsoleActor] = consoleClient;
       }
       aOnResponse(aResponse, consoleClient);
     });
@@ -471,17 +483,16 @@ DebuggerClient.prototype = {
    *        - useSourceMaps: whether to use source maps or not.
    */
   attachThread: function DC_attachThread(aThreadActor, aOnResponse, aOptions={}) {
-    let self = this;
     let packet = {
       to: aThreadActor,
       type: "attach",
       options: aOptions
     };
-    this.request(packet, function(aResponse) {
+    this.request(packet, (aResponse) => {
       if (!aResponse.error) {
-        var threadClient = new ThreadClient(self, aThreadActor);
-        self._threadClients[aThreadActor] = threadClient;
-        self.activeThread = threadClient;
+        var threadClient = new ThreadClient(this, aThreadActor);
+        this._threadClients[aThreadActor] = threadClient;
+        this.activeThread = threadClient;
       }
       aOnResponse(aResponse, threadClient);
     });
@@ -490,16 +501,16 @@ DebuggerClient.prototype = {
   /**
    * Reconfigure a thread actor.
    *
-   * @param boolean aUseSourceMaps
-   *        A flag denoting whether to use source maps or not.
+   * @param object aOptions
+   *        A dictionary object of the new options to use in the thread actor.
    * @param function aOnResponse
    *        Called with the response packet.
    */
-  reconfigureThread: function DC_reconfigureThread(aUseSourceMaps, aOnResponse) {
+  reconfigureThread: function(aOptions, aOnResponse) {
     let packet = {
       to: this.activeThread._actor,
       type: "reconfigure",
-      options: { useSourceMaps: aUseSourceMaps }
+      options: aOptions
     };
     this.request(packet, aOnResponse);
   },
@@ -530,7 +541,7 @@ DebuggerClient.prototype = {
    *        debugging server responds.
    */
   request: function DC_request(aRequest, aOnResponse) {
-    if (!this._connected) {
+    if (!this.mainRoot) {
       throw Error("Have not yet received a hello packet from the server.");
     }
     if (!aRequest.to) {
@@ -549,17 +560,31 @@ DebuggerClient.prototype = {
    * active request.
    */
   _sendRequests: function DC_sendRequests() {
-    let self = this;
-    this._pendingRequests = this._pendingRequests.filter(function (request) {
-      if (request.to in self._activeRequests) {
+    this._pendingRequests = this._pendingRequests.filter((request) => {
+      if (this._activeRequests.has(request.to)) {
         return true;
       }
 
-      self._activeRequests[request.to] = request;
-      self._transport.send(request.request);
+      this.expectReply(request.to, request.onResponse);
+      this._transport.send(request.request);
 
       return false;
     });
+  },
+
+  /**
+   * Arrange to hand the next reply from |aActor| to |aHandler|.
+   *
+   * DebuggerClient.prototype.request usually takes care of establishing
+   * the handler for a given request, but in rare cases (well, greetings
+   * from new root actors, is the only case at the moment) we must be
+   * prepared for a "reply" that doesn't correspond to any request we sent.
+   */
+  expectReply: function(aActor, aHandler) {
+    if (this._activeRequests.has(aActor)) {
+      throw Error("clashing handlers for next reply from " + uneval(aActor));
+    }
+    this._activeRequests.set(aActor, aHandler);
   },
 
   // Transport hooks.
@@ -578,15 +603,6 @@ DebuggerClient.prototype = {
       : this.compat.onPacket(aPacket);
 
     resolve(packet).then((aPacket) => {
-      if (!this._connected) {
-        // Hello packet.
-        this._connected = true;
-        this.notify("connected",
-                    aPacket.applicationType,
-                    aPacket.traits);
-        return;
-      }
-
       if (!aPacket.from) {
         let msg = "Server did not specify an actor, dropping packet: " +
                   JSON.stringify(aPacket);
@@ -595,14 +611,24 @@ DebuggerClient.prototype = {
         return;
       }
 
+      // If we have a registered Front for this actor, let it handle the packet
+      // and skip all the rest of this unpleasantness.
+      let front = this.getActor(aPacket.from);
+      if (front) {
+        front.onPacket(aPacket);
+        return;
+      }
+
       let onResponse;
-      // Don't count unsolicited notifications or pauses as responses.
-      if (aPacket.from in this._activeRequests &&
+      // See if we have a handler function waiting for a reply from this
+      // actor. (Don't count unsolicited notifications or pauses as
+      // replies.)
+      if (this._activeRequests.has(aPacket.from) &&
           !(aPacket.type in UnsolicitedNotifications) &&
           !(aPacket.type == ThreadStateTypes.paused &&
             aPacket.why.type in UnsolicitedPauses)) {
-        onResponse = this._activeRequests[aPacket.from].onResponse;
-        delete this._activeRequests[aPacket.from];
+        onResponse = this._activeRequests.get(aPacket.from);
+        this._activeRequests.delete(aPacket.from);
       }
 
       // Packets that indicate thread state changes get special treatment.
@@ -646,6 +672,36 @@ DebuggerClient.prototype = {
   onClosed: function DC_onClosed(aStatus) {
     this.notify("closed");
   },
+
+  /**
+   * Actor lifetime management, echos the server's actor pools.
+   */
+  __pools: null,
+  get _pools() {
+    if (this.__pools) {
+      return this.__pools;
+    }
+    this.__pools = new Set();
+    return this.__pools;
+  },
+
+  addActorPool: function(pool) {
+    this._pools.add(pool);
+  },
+  removeActorPool: function(pool) {
+    this._pools.delete(pool);
+  },
+  getActor: function(actorID) {
+    let pool = this.poolFor(actorID);
+    return pool ? pool.get(actorID) : null;
+  },
+
+  poolFor: function(actorID) {
+    for (let pool of this._pools) {
+      if (pool.has(actorID)) return pool;
+    }
+    return null;
+  }
 }
 
 eventSource(DebuggerClient.prototype);
@@ -876,9 +932,79 @@ TabClient.prototype = {
     },
     telemetry: "TABDETACH"
   }),
+
+  /**
+   * Reload the page in this tab.
+   */
+  reload: DebuggerClient.requester({
+    type: "reload"
+  }, {
+    telemetry: "RELOAD"
+  }),
+
+  /**
+   * Navigate to another URL.
+   *
+   * @param string url
+   *        The URL to navigate to.
+   */
+  navigateTo: DebuggerClient.requester({
+    type: "navigateTo",
+    url: args(0)
+  }, {
+    telemetry: "NAVIGATETO"
+  }),
 };
 
 eventSource(TabClient.prototype);
+
+/**
+ * A RootClient object represents a root actor on the server. Each
+ * DebuggerClient keeps a RootClient instance representing the root actor
+ * for the initial connection; DebuggerClient's 'listTabs' and
+ * 'listChildProcesses' methods forward to that root actor.
+ *
+ * @param aClient object
+ *      The client connection to which this actor belongs.
+ * @param aGreeting string
+ *      The greeting packet from the root actor we're to represent.
+ *
+ * Properties of a RootClient instance:
+ *
+ * @property actor string
+ *      The name of this child's root actor.
+ * @property applicationType string
+ *      The application type, as given in the root actor's greeting packet.
+ * @property traits object
+ *      The traits object, as given in the root actor's greeting packet.
+ */
+function RootClient(aClient, aGreeting) {
+  this._client = aClient;
+  this.actor = aGreeting.from;
+  this.applicationType = aGreeting.applicationType;
+  this.traits = aGreeting.traits;
+}
+
+RootClient.prototype = {
+  constructor: RootClient,
+
+  /**
+   * List the open tabs.
+   *
+   * @param function aOnResponse
+   *        Called with the response packet.
+   */
+  listTabs: DebuggerClient.requester({ type: "listTabs" },
+                                     { telemetry: "LISTTABS" }),
+
+  /*
+   * Methods constructed by DebuggerClient.requester require these forwards
+   * on their 'this'.
+   */
+  get _transport() { return this._client._transport; },
+  get request()    { return this._client.request;    }
+};
+
 
 /**
  * Creates a thread client for the remote debugging protocol server. This client
@@ -906,6 +1032,7 @@ ThreadClient.prototype = {
   get paused() { return this._state === "paused"; },
 
   _pauseOnExceptions: false,
+  _pauseOnDOMEvents: null,
 
   _actor: null,
   get actor() { return this._actor; },
@@ -941,7 +1068,15 @@ ThreadClient.prototype = {
       // further requests that should only be sent in the paused state.
       this._state = "resuming";
 
-      aPacket.pauseOnExceptions = this._pauseOnExceptions;
+      if (!aPacket.resumeLimit) {
+        delete aPacket.resumeLimit;
+      }
+      if (this._pauseOnExceptions) {
+        aPacket.pauseOnExceptions = this._pauseOnExceptions;
+      }
+      if (this._pauseOnDOMEvents) {
+        aPacket.pauseOnDOMEvents = this._pauseOnDOMEvents;
+      }
       return aPacket;
     },
     after: function (aResponse) {
@@ -1013,19 +1148,48 @@ ThreadClient.prototype = {
    */
   pauseOnExceptions: function TC_pauseOnExceptions(aFlag, aOnResponse) {
     this._pauseOnExceptions = aFlag;
-    // If the debuggee is paused, the value of the flag will be communicated in
-    // the next resumption. Otherwise we have to force a pause in order to send
-    // the flag.
-    if (!this.paused) {
-      this.interrupt(function(aResponse) {
-        if (aResponse.error) {
-          // Can't continue if pausing failed.
-          aOnResponse(aResponse);
-          return;
-        }
-        this.resume(aOnResponse);
-      }.bind(this));
+    // If the debuggee is paused, we have to send the flag via a reconfigure
+    // request.
+    if (this.paused) {
+      this._client.reconfigureThread({ pauseOnExceptions: aFlag }, aOnResponse);
+      return;
     }
+    // Otherwise send the flag using a standard resume request.
+    this.interrupt(aResponse => {
+      if (aResponse.error) {
+        // Can't continue if pausing failed.
+        aOnResponse(aResponse);
+        return;
+      }
+      this.resume(aOnResponse);
+    });
+  },
+
+  /**
+   * Enable pausing when the specified DOM events are triggered. Disabling
+   * pausing on an event can be realized by calling this method with the updated
+   * array of events that doesn't contain it.
+   *
+   * @param array|string events
+   *        An array of strings, representing the DOM event types to pause on,
+   *        or "*" to pause on all DOM events. Pass an empty array to
+   *        completely disable pausing on DOM events.
+   * @param function onResponse
+   *        Called with the response packet in a future turn of the event loop.
+   */
+  pauseOnDOMEvents: function (events, onResponse) {
+    this._pauseOnDOMEvents = events;
+    // If the debuggee is paused, the value of the array will be communicated in
+    // the next resumption. Otherwise we have to force a pause in order to send
+    // the array.
+    if (this.paused)
+      return void setTimeout(onResponse, 0);
+    this.interrupt(response => {
+      // Can't continue if pausing failed.
+      if (response.error)
+        return void onResponse(response);
+      this.resume(onResponse);
+    });
   },
 
   /**
@@ -1151,6 +1315,18 @@ ThreadClient.prototype = {
     actors: args(0)
   }, {
     telemetry: "THREADGRIPS"
+  }),
+
+  /**
+   * Return the event listeners defined on the page.
+   *
+   * @param aOnResponse Function
+   *        Called with the thread's response.
+   */
+  eventListeners: DebuggerClient.requester({
+    type: "eventListeners"
+  }, {
+    telemetry: "EVENTLISTENERS"
   }),
 
   /**
@@ -1286,15 +1462,14 @@ ThreadClient.prototype = {
 
     let numFrames = this._frameCache.length;
 
-    let self = this;
-    this.getFrames(numFrames, aTotal - numFrames, function(aResponse) {
+    this.getFrames(numFrames, aTotal - numFrames, (aResponse) => {
       for each (let frame in aResponse.frames) {
-        self._frameCache[frame.depth] = frame;
+        this._frameCache[frame.depth] = frame;
       }
       // If we got as many frames as we asked for, there might be more
       // frames available.
 
-      self.notify("framesadded");
+      this.notify("framesadded");
     });
     return true;
   },
@@ -1511,6 +1686,17 @@ GripClient.prototype = {
   }, {
     telemetry: "PROTOTYPE"
   }),
+
+  /**
+   * Request the display string of the object.
+   *
+   * @param aOnResponse function Called with the request's response.
+   */
+  getDisplayString: DebuggerClient.requester({
+    type: "displayString"
+  }, {
+    telemetry: "DISPLAYSTRING"
+  }),
 };
 
 /**
@@ -1571,9 +1757,11 @@ function SourceClient(aClient, aForm) {
 
 SourceClient.prototype = {
   get _transport() this._client._transport,
+  get _activeThread() this._client.activeThread,
   get isBlackBoxed() this._isBlackBoxed,
   get actor() this._form.actor,
   get request() this._client.request,
+  get url() this._form.url,
 
   /**
    * Black box this SourceClient's source.
@@ -1588,6 +1776,9 @@ SourceClient.prototype = {
     after: function (aResponse) {
       if (!aResponse.error) {
         this._isBlackBoxed = true;
+        if (this._activeThread) {
+          this._activeThread.notify("blackboxchange", this);
+        }
       }
       return aResponse;
     }
@@ -1606,6 +1797,9 @@ SourceClient.prototype = {
     after: function (aResponse) {
       if (!aResponse.error) {
         this._isBlackBoxed = false;
+        if (this._activeThread) {
+          this._activeThread.notify("blackboxchange", this);
+        }
       }
       return aResponse;
     }

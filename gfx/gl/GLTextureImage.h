@@ -36,6 +36,8 @@ class GLContext;
 class TextureImage
 {
     NS_INLINE_DECL_REFCOUNTING(TextureImage)
+protected:
+    typedef gfxASurface::gfxImageFormat ImageFormat;
 public:
     enum TextureState
     {
@@ -64,10 +66,10 @@ public:
 
     /**
      * Returns a gfxASurface for updating |aRegion| of the client's
-     * image if successul, NULL if not.  |aRegion|'s bounds must fit
+     * image if successul, nullptr if not.  |aRegion|'s bounds must fit
      * within Size(); its coordinate space (if any) is ignored.  If
      * the update begins successfully, the returned gfxASurface is
-     * owned by this.  Otherwise, NULL is returned.
+     * owned by this.  Otherwise, nullptr is returned.
      *
      * |aRegion| is an inout param: the returned region is what the
      * client must repaint.  Category (1) regions above can
@@ -201,13 +203,11 @@ public:
     };
 
     /**
-     * Returns the shader program type that should be used to render
-     * this texture. Only valid after a matching BeginUpdate/EndUpdate
-     * pair have been called.
+     * Returns the image format of the texture. Only valid after a matching
+     * BeginUpdate/EndUpdate pair have been called.
      */
-    virtual ShaderProgramType GetShaderProgramType()
-    {
-         return mShaderType;
+    virtual gfx::SurfaceFormat GetTextureFormat() {
+        return mTextureFormat;
     }
 
     /** Can be called safely at any time. */
@@ -258,7 +258,7 @@ protected:
     nsIntSize mSize;
     GLenum mWrapMode;
     ContentType mContentType;
-    ShaderProgramType mShaderType;
+    gfx::SurfaceFormat mTextureFormat;
     gfxPattern::GraphicsFilter mFilter;
     Flags mFlags;
 };
@@ -276,7 +276,6 @@ class BasicTextureImage
     : public TextureImage
 {
 public:
-    typedef gfxASurface::gfxImageFormat ImageFormat;
     virtual ~BasicTextureImage();
 
     BasicTextureImage(GLuint aTexture,

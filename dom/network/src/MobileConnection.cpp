@@ -67,8 +67,6 @@ NS_INTERFACE_MAP_END_INHERITING(nsDOMEventTargetHelper)
 NS_IMPL_ADDREF_INHERITED(MobileConnection, nsDOMEventTargetHelper)
 NS_IMPL_RELEASE_INHERITED(MobileConnection, nsDOMEventTargetHelper)
 
-NS_IMPL_EVENT_HANDLER(MobileConnection, cardstatechange)
-NS_IMPL_EVENT_HANDLER(MobileConnection, iccinfochange)
 NS_IMPL_EVENT_HANDLER(MobileConnection, voicechange)
 NS_IMPL_EVENT_HANDLER(MobileConnection, datachange)
 NS_IMPL_EVENT_HANDLER(MobileConnection, ussdreceived)
@@ -163,39 +161,6 @@ MobileConnection::CheckPermission(const char* type)
 }
 
 NS_IMETHODIMP
-MobileConnection::GetCardState(nsAString& cardState)
-{
-  cardState.SetIsVoid(true);
-
-  if (!mProvider || !CheckPermission("mobileconnection")) {
-    return NS_OK;
-  }
-  return mProvider->GetCardState(cardState);
-}
-
-NS_IMETHODIMP
-MobileConnection::GetRetryCount(int32_t* retryCount)
-{
-  *retryCount = 0;
-
-  if (!mProvider || !CheckPermission("mobileconnection")) {
-    return NS_OK;
-  }
-  return mProvider->GetRetryCount(retryCount);
-}
-
-NS_IMETHODIMP
-MobileConnection::GetIccInfo(nsIDOMMozMobileICCInfo** aIccInfo)
-{
-  *aIccInfo = nullptr;
-
-  if (!mProvider || !CheckPermission("mobileconnection")) {
-    return NS_OK;
-  }
-  return mProvider->GetIccInfo(aIccInfo);
-}
-
-NS_IMETHODIMP
 MobileConnection::GetVoice(nsIDOMMozMobileConnectionInfo** voice)
 {
   *voice = nullptr;
@@ -277,9 +242,10 @@ MobileConnection::SelectNetworkAutomatically(nsIDOMDOMRequest** request)
 }
 
 NS_IMETHODIMP
-MobileConnection::SendMMI(const nsAString& aMMIString,
-                          nsIDOMDOMRequest** request)
+MobileConnection::SetRoamingPreference(const nsAString& aMode, nsIDOMDOMRequest** aDomRequest)
 {
+  *aDomRequest = nullptr;
+
   if (!CheckPermission("mobileconnection")) {
     return NS_OK;
   }
@@ -288,11 +254,28 @@ MobileConnection::SendMMI(const nsAString& aMMIString,
     return NS_ERROR_FAILURE;
   }
 
-  return mProvider->SendMMI(GetOwner(), aMMIString, request);
+  return mProvider->SetRoamingPreference(GetOwner(), aMode, aDomRequest);
 }
 
 NS_IMETHODIMP
-MobileConnection::CancelMMI(nsIDOMDOMRequest** request)
+MobileConnection::GetRoamingPreference(nsIDOMDOMRequest** aDomRequest)
+{
+  *aDomRequest = nullptr;
+
+  if (!CheckPermission("mobileconnection")) {
+    return NS_OK;
+  }
+
+  if (!mProvider) {
+    return NS_ERROR_FAILURE;
+  }
+
+  return mProvider->GetRoamingPreference(GetOwner(), aDomRequest);
+}
+
+NS_IMETHODIMP
+MobileConnection::SendMMI(const nsAString& aMMIString,
+                          nsIDOMDOMRequest** aRequest)
 {
   if (!CheckPermission("mobileconnection")) {
     return NS_OK;
@@ -302,7 +285,21 @@ MobileConnection::CancelMMI(nsIDOMDOMRequest** request)
     return NS_ERROR_FAILURE;
   }
 
-  return mProvider->CancelMMI(GetOwner(), request);
+  return mProvider->SendMMI(GetOwner(), aMMIString, aRequest);
+}
+
+NS_IMETHODIMP
+MobileConnection::CancelMMI(nsIDOMDOMRequest** aRequest)
+{
+  if (!CheckPermission("mobileconnection")) {
+    return NS_OK;
+  }
+
+  if (!mProvider) {
+    return NS_ERROR_FAILURE;
+  }
+
+  return mProvider->CancelMMI(GetOwner(), aRequest);
 }
 
 NS_IMETHODIMP
@@ -406,6 +403,39 @@ MobileConnection::SetCallWaitingOption(bool aEnabled,
   return mProvider->SetCallWaitingOption(GetOwner(), aEnabled, aRequest);
 }
 
+NS_IMETHODIMP
+MobileConnection::GetCallingLineIdRestriction(nsIDOMDOMRequest** aRequest)
+{
+  *aRequest = nullptr;
+
+  if (!CheckPermission("mobileconnection")) {
+    return NS_OK;
+  }
+
+  if (!mProvider) {
+    return NS_ERROR_FAILURE;
+  }
+
+  return mProvider->GetCallingLineIdRestriction(GetOwner(), aRequest);
+}
+
+NS_IMETHODIMP
+MobileConnection::SetCallingLineIdRestriction(unsigned short aClirMode,
+                                              nsIDOMDOMRequest** aRequest)
+{
+  *aRequest = nullptr;
+
+  if (!CheckPermission("mobileconnection")) {
+    return NS_OK;
+  }
+
+  if (!mProvider) {
+    return NS_ERROR_FAILURE;
+  }
+
+  return mProvider->SetCallingLineIdRestriction(GetOwner(), aClirMode, aRequest);
+}
+
 // nsIMobileConnectionListener
 
 NS_IMETHODIMP
@@ -426,26 +456,6 @@ MobileConnection::NotifyDataChanged()
   }
 
   return DispatchTrustedEvent(NS_LITERAL_STRING("datachange"));
-}
-
-NS_IMETHODIMP
-MobileConnection::NotifyCardStateChanged()
-{
-  if (!CheckPermission("mobileconnection")) {
-    return NS_OK;
-  }
-
-  return DispatchTrustedEvent(NS_LITERAL_STRING("cardstatechange"));
-}
-
-NS_IMETHODIMP
-MobileConnection::NotifyIccInfoChanged()
-{
-  if (!CheckPermission("mobileconnection")) {
-    return NS_OK;
-  }
-
-  return DispatchTrustedEvent(NS_LITERAL_STRING("iccinfochange"));
 }
 
 NS_IMETHODIMP

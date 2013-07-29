@@ -50,6 +50,16 @@ var gAdvancedPane = {
       ["autoMetro", "autoMetroIndent"].forEach(
         function(id) document.getElementById(id).collapsed = true
       );
+    } else {
+      let brandShortName =
+        document.getElementById("bundleBrand").getString("brandShortName");
+      let bundlePrefs = document.getElementById("bundlePreferences");
+      let autoDesktop = document.getElementById("autoDesktop");
+      autoDesktop.label =
+        bundlePrefs.getFormattedString("updateAutoDesktop.label",
+                                       [brandShortName]);
+      autoDesktop.accessKey =
+        bundlePrefs.getString("updateAutoDesktop.accessKey");
     }
 #endif
 #endif
@@ -240,7 +250,7 @@ var gAdvancedPane = {
 
     let checkbox = document.getElementById("submitHealthReportBox");
 
-    if (!policy) {
+    if (!policy || policy.healthReportUploadLocked) {
       checkbox.setAttribute("disabled", "true");
       return;
     }
@@ -620,6 +630,7 @@ var gAdvancedPane = {
 #ifdef MOZ_METRO
     if (this._showingWin8Prefs) {
       warnIncompatible.disabled |= metroEnabledPref.value;
+      warnIncompatible.checked |= metroEnabledPref.value;
     }
 #endif
 #endif
@@ -670,6 +681,7 @@ var gAdvancedPane = {
   {
     var enabledPref = document.getElementById("app.update.enabled");
     var autoPref = document.getElementById("app.update.auto");
+    var modePref = document.getElementById("app.update.mode");
 #ifdef XP_WIN
 #ifdef MOZ_METRO
     var metroEnabledPref = document.getElementById("app.update.metro.enabled");
@@ -691,6 +703,7 @@ var gAdvancedPane = {
         enabledPref.value = true;
         autoPref.value = true;
         metroEnabledPref.value = true;
+        modePref.value = 1;
         break;
 #endif
 #endif
@@ -704,7 +717,6 @@ var gAdvancedPane = {
     }
 
     var warnIncompatible = document.getElementById("warnIncompatible");
-    var modePref = document.getElementById("app.update.mode");
     warnIncompatible.disabled = enabledPref.locked || !enabledPref.value ||
                                 autoPref.locked || !autoPref.value ||
                                 modePref.locked;
@@ -713,6 +725,7 @@ var gAdvancedPane = {
 #ifdef MOZ_METRO
     if (this._showingWin8Prefs) {
       warnIncompatible.disabled |= metroEnabledPref.value;
+      warnIncompatible.checked |= metroEnabledPref.value;
     }
 #endif
 #endif
@@ -791,16 +804,6 @@ var gAdvancedPane = {
   {
     document.documentElement.openWindow("mozilla:certmanager",
                                         "chrome://pippki/content/certManager.xul",
-                                        "", null);
-  },
-
-  /**
-   * Displays a dialog which describes the user's CRLs.
-   */
-  showCRLs: function ()
-  {
-    document.documentElement.openWindow("mozilla:crlmanager",
-                                        "chrome://pippki/content/crlManager.xul",
                                         "", null);
   },
 

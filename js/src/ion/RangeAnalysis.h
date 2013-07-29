@@ -4,16 +4,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef jsion_range_analysis_h__
-#define jsion_range_analysis_h__
+#ifndef ion_RangeAnalysis_h
+#define ion_RangeAnalysis_h
 
 #include "mozilla/FloatingPoint.h"
 #include "mozilla/MathAlgorithms.h"
 
-#include "wtf/Platform.h"
-#include "MIR.h"
-#include "CompileInfo.h"
-#include "IonAnalysis.h"
+#include "ion/CompileInfo.h"
+#include "ion/IonAnalysis.h"
+#include "ion/MIR.h"
 
 namespace js {
 namespace ion {
@@ -78,7 +77,8 @@ class RangeAnalysis
     MIRGraph &graph_;
 
   public:
-    RangeAnalysis(MIRGraph &graph);
+    MOZ_CONSTEXPR RangeAnalysis(MIRGraph &graph) :
+        graph_(graph) {}
     bool addBetaNobes();
     bool analyze();
     bool removeBetaNobes();
@@ -197,8 +197,6 @@ class Range : public TempObject {
 
     Range(const MDefinition *def);
 
-    static Range *Truncate(int64_t l, int64_t h);
-
     void print(Sprinter &sp) const;
     bool update(const Range *other);
     bool update(const Range &other) {
@@ -215,8 +213,18 @@ class Range : public TempObject {
     static Range * sub(const Range *lhs, const Range *rhs);
     static Range * mul(const Range *lhs, const Range *rhs);
     static Range * and_(const Range *lhs, const Range *rhs);
-    static Range * shl(const Range *lhs, int32_t c);
-    static Range * shr(const Range *lhs, int32_t c);
+    static Range * or_(const Range *lhs, const Range *rhs);
+    static Range * xor_(const Range *lhs, const Range *rhs);
+    static Range * not_(const Range *op);
+    static Range * lsh(const Range *lhs, int32_t c);
+    static Range * rsh(const Range *lhs, int32_t c);
+    static Range * ursh(const Range *lhs, int32_t c);
+    static Range * lsh(const Range *lhs, const Range *rhs);
+    static Range * rsh(const Range *lhs, const Range *rhs);
+    static Range * ursh(const Range *lhs, const Range *rhs);
+    static Range * abs(const Range *op);
+    static Range * min(const Range *lhs, const Range *rhs);
+    static Range * max(const Range *lhs, const Range *rhs);
 
     static bool negativeZeroMul(const Range *lhs, const Range *rhs);
 
@@ -247,6 +255,9 @@ class Range : public TempObject {
 
     inline bool isInt32() const {
         return !isLowerInfinite() && !isUpperInfinite();
+    }
+    inline bool isBoolean() const {
+        return lower() >= 0 && upper() <= 1;
     }
 
     inline bool hasRoundingErrors() const {
@@ -317,7 +328,7 @@ class Range : public TempObject {
         max_exponent_ = MaxInt32Exponent;
     }
 
-    inline void set(int64_t l, int64_t h, bool d, uint16_t e) {
+    inline void set(int64_t l, int64_t h, bool d = false, uint16_t e = MaxInt32Exponent) {
         setLowerInit(l);
         setUpperInit(h);
         decimal_ = d;
@@ -327,8 +338,29 @@ class Range : public TempObject {
         JS_ASSERT_IF(upper_infinite_, upper_ == JSVAL_INT_MAX);
     }
 
-    // Truncate the range to an Int32 range.
-    void truncate();
+    // Make the lower end of this range at least INT32_MIN, and make
+    // the upper end of this range at most INT32_MAX.
+    void clampToInt32();
+
+    // If this range exceeds int32_t range, at either or both ends, change
+    // it to int32_t range.  Otherwise do nothing.
+    void wrapAroundToInt32();
+
+    // If this range exceeds [0, 32) range, at either or both ends, change
+    // it to the [0, 32) range.  Otherwise do nothing.
+    void wrapAroundToShiftCount();
+
+    // If this range exceeds [0, 1] range, at either or both ends, change
+    // it to the [0, 1] range.  Otherwise do nothing.
+    void wrapAroundToBoolean();
+
+    // As we lack support of MIRType_UInt32, we need to work around the int32
+    // representation by doing an overflow while keeping the upper infinity to
+    // repesent the fact that the value might reach bigger numbers.
+    void extendUInt32ToInt32Min() {
+        JS_ASSERT(isUpperInfinite());
+        lower_ = JSVAL_INT_MIN;
+    }
 
     // Set the exponent by using the precise range analysis on the full
     // range of Int32 values. This might shrink the exponent after some
@@ -347,7 +379,7 @@ class Range : public TempObject {
         JS_ASSERT_IF(lower() == JSVAL_INT_MIN, max == (uint32_t) JSVAL_INT_MIN);
         JS_ASSERT(max <= (uint32_t) JSVAL_INT_MIN);
         // The number of bits needed to encode |max| is the power of 2 plus one.
-        max_exponent_ = max ? js_FloorLog2wImpl(max) : max;
+        max_exponent_ = max ? mozilla::FloorLog2Size(max) : max;
     }
 
     const SymbolicBound *symbolicLower() const {
@@ -368,5 +400,4 @@ class Range : public TempObject {
 } // namespace ion
 } // namespace js
 
-#endif // jsion_range_analysis_h__
-
+#endif /* ion_RangeAnalysis_h */

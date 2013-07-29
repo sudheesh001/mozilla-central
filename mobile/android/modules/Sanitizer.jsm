@@ -92,12 +92,6 @@ Sanitizer.prototype = {
       clear: function ()
       {
         Services.cookies.removeAll();
-
-        // clear any network geolocation provider sessions
-        try {
-          var branch = Services.prefs.getBranch("geo.wifi.access_token.");
-          branch.deleteBranch("");
-        } catch (e) {dump(e);}
       },
 
       get canClear()
@@ -120,7 +114,7 @@ Sanitizer.prototype = {
         // Clear "Never remember passwords for this site", which is not handled by
         // the permission manager
         var hosts = Services.logins.getAllDisabledHosts({})
-        for each (var host in hosts) {
+        for (var host of hosts) {
           Services.logins.setLoginSavingEnabled(host, true);
         }
       },

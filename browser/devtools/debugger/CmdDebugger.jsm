@@ -34,9 +34,10 @@ XPCOMUtils.defineLazyModuleGetter(this, "console",
  */
 function getAllBreakpoints(dbg) {
   let breakpoints = [];
-  let SourceUtils = dbg.panelWin.SourceUtils;
+  let sources = dbg.panelWin.DebuggerView.Sources;
+  let { trimUrlLength: tr } = dbg.panelWin.SourceUtils;
 
-  for (let source in dbg.panelWin.DebuggerView.Sources) {
+  for (let source in sources) {
     for (let { attachment: breakpoint } in source) {
       breakpoints.push({
         id: source.value + ":" + breakpoint.lineNumber,
@@ -44,8 +45,7 @@ function getAllBreakpoints(dbg) {
         url: source.value,
         lineNumber: breakpoint.lineNumber,
         lineText: breakpoint.lineText,
-        truncatedLineText: SourceUtils.trimUrlLength(breakpoint.lineText,
-                                                  MAX_LINE_TEXT_LENGTH, "end")
+        truncatedLineText: tr(breakpoint.lineText, MAX_LINE_TEXT_LENGTH, "end")
       });
     }
   }
@@ -199,11 +199,9 @@ gcli.addCommand({
         name: "selection",
         lookup: function(context) {
           let dbg = getPanel(context, "jsdebugger");
-
           if (dbg == null) {
             return [];
           }
-
           return getAllBreakpoints(dbg).map(breakpoint => {
             return {
               name: breakpoint.label,
@@ -223,8 +221,8 @@ gcli.addCommand({
       return gcli.lookup("debuggerStopped");
     }
 
-    let breakpoint = dbg.getBreakpoint(args.breakpoint.url,
-                                       args.breakpoint.lineNumber);
+    let breakpoint = dbg.getBreakpoint(
+      args.breakpoint.url, args.breakpoint.lineNumber);
 
     if (breakpoint == null) {
       return gcli.lookup("breakNotFound");
@@ -274,6 +272,9 @@ gcli.addCommand({
   description: gcli.lookup("dbgClose"),
   params: [],
   exec: function(args, context) {
+    if (!getPanel(context, "jsdebugger"))
+      return;
+
     return gDevTools.closeToolbox(context.environment.target)
                     .then(() => null);
   }
@@ -423,6 +424,122 @@ gcli.addCommand({
 });
 
 /**
+ * Define the 'dbg blackbox' and 'dbg unblackbox' commands.
+ */
+[
+  {
+    name: "blackbox",
+    clientMethod: "blackBox",
+    l10nPrefix: "dbgBlackBox"
+  },
+  {
+    name: "unblackbox",
+    clientMethod: "unblackBox",
+    l10nPrefix: "dbgUnBlackBox"
+  }
+].forEach(function (cmd) {
+  const lookup = function (id) {
+    return gcli.lookup(cmd.l10nPrefix + id);
+  };
+
+  gcli.addCommand({
+    name: "dbg " + cmd.name,
+    description: lookup("Desc"),
+    params: [
+      {
+        name: "source",
+        type: {
+          name: "selection",
+          data: function (context) {
+            let dbg = getPanel(context, "jsdebugger");
+            return dbg
+              ? [s for (s of dbg._view.Sources.values)]
+              : [];
+          }
+        },
+        description: lookup("SourceDesc"),
+        defaultValue: null
+      },
+      {
+        name: "glob",
+        type: "string",
+        description: lookup("GlobDesc"),
+        defaultValue: null
+      }
+    ],
+    returnType: "dom",
+    exec: function (args, context) {
+      const dbg = getPanel(context, "jsdebugger");
+      const doc = context.environment.chromeDocument;
+      if (!dbg) {
+        throw new Error(gcli.lookup("debuggerClosed"));
+      }
+
+      const { promise, resolve, reject } = context.defer();
+      const { activeThread } = dbg._controller;
+      const globRegExp = args.glob
+        ? globToRegExp(args.glob)
+        : null;
+
+      // Filter the sources down to those that we will need to black box.
+
+      function shouldBlackBox(source) {
+        return globRegExp && globRegExp.test(source.url)
+          || args.source && source.url == args.source;
+      }
+
+      const toBlackBox = [s.attachment.source
+                          for (s of dbg._view.Sources.items)
+                          if (shouldBlackBox(s.attachment.source))];
+
+      // If we aren't black boxing any sources, bail out now.
+
+      if (toBlackBox.length === 0) {
+        const empty = createXHTMLElement(doc, "div");
+        empty.textContent = lookup("EmptyDesc");
+        return void resolve(empty);
+      }
+
+      // Send the black box request to each source we are black boxing. As we
+      // get responses, accumulate the results in `blackBoxed`.
+
+      const blackBoxed = [];
+
+      for (let source of toBlackBox) {
+        activeThread.source(source)[cmd.clientMethod](function ({ error }) {
+          if (error) {
+            blackBoxed.push(lookup("ErrorDesc") + " " + source.url);
+          } else {
+            blackBoxed.push(source.url);
+          }
+
+          if (toBlackBox.length === blackBoxed.length) {
+            displayResults();
+          }
+        });
+      }
+
+      // List the results for the user.
+
+      function displayResults() {
+        const results = doc.createElement("div");
+        results.textContent = lookup("NonEmptyDesc");
+        const list = createXHTMLElement(doc, "ul");
+        results.appendChild(list);
+        for (let result of blackBoxed) {
+          const item = createXHTMLElement(doc, "li");
+          item.textContent = result;
+          list.appendChild(item);
+        }
+        resolve(results);
+      }
+
+      return promise;
+    }
+  });
+});
+
+/**
  * A helper to create xhtml namespaced elements
  */
 function createXHTMLElement(document, tagname) {
@@ -450,4 +567,33 @@ function getPanel(context, id, options = {}) {
       return undefined;
     }
   }
+}
+
+/**
+ * Converts a glob to a regular expression
+ */
+function globToRegExp(glob) {
+  const reStr = glob
+  // Escape existing regular expression syntax
+    .replace(/\\/g, "\\\\")
+    .replace(/\//g, "\\/")
+    .replace(/\^/g, "\\^")
+    .replace(/\$/g, "\\$")
+    .replace(/\+/g, "\\+")
+    .replace(/\?/g, "\\?")
+    .replace(/\./g, "\\.")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)")
+    .replace(/\=/g, "\\=")
+    .replace(/\!/g, "\\!")
+    .replace(/\|/g, "\\|")
+    .replace(/\{/g, "\\{")
+    .replace(/\}/g, "\\}")
+    .replace(/\,/g, "\\,")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]")
+    .replace(/\-/g, "\\-")
+  // Turn * into the match everything wildcard
+    .replace(/\*/g, ".*")
+  return new RegExp("^" + reStr + "$");
 }

@@ -4,14 +4,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "jscompartment.h"
+#include "jscompartmentinlines.h"
 
 #include "mozilla/DebugOnly.h"
+#include "mozilla/MemoryReporting.h"
 
 #include "jscntxt.h"
 #include "jsgc.h"
 #include "jsiter.h"
-#include "jsmath.h"
 #include "jsproxy.h"
 #include "jswatchpoint.h"
 #include "jswrapper.h"
@@ -21,17 +21,23 @@
 #include "ion/IonCompartment.h"
 #endif
 #include "js/RootingAPI.h"
+#include "vm/StopIterationObject.h"
+#include "vm/WrapperObject.h"
 
+#include "jsfuninlines.h"
 #include "jsgcinlines.h"
 #include "jsobjinlines.h"
+
+#include "gc/Barrier-inl.h"
 
 using namespace js;
 using namespace js::gc;
 
 using mozilla::DebugOnly;
 
-JSCompartment::JSCompartment(Zone *zone)
+JSCompartment::JSCompartment(Zone *zone, const JS::CompartmentOptions &options = JS::CompartmentOptions())
   : zone_(zone),
+    options_(options),
     rt(zone->rt),
     principals(NULL),
     isSystem(false),
@@ -83,7 +89,7 @@ JSCompartment::init(JSContext *cx)
 {
     /*
      * As a hack, we clear our timezone cache every time we create a new
-     * compartment.  This ensures that the cache is always relatively fresh, but
+     * compartment. This ensures that the cache is always relatively fresh, but
      * shouldn't interfere with benchmarks which create tons of date objects
      * (unless they also create tons of iframes, which seems unlikely).
      */
@@ -188,6 +194,7 @@ bool
 JSCompartment::wrap(JSContext *cx, MutableHandleValue vp, HandleObject existingArg)
 {
     JS_ASSERT(cx->compartment() == this);
+    JS_ASSERT(this != rt->atomsCompartment);
     JS_ASSERT_IF(existingArg, existingArg->compartment() == cx->compartment());
     JS_ASSERT_IF(existingArg, vp.isObject());
     JS_ASSERT_IF(existingArg, IsDeadProxyObject(existingArg));
@@ -233,7 +240,7 @@ JSCompartment::wrap(JSContext *cx, MutableHandleValue vp, HandleObject existingA
             return WrapForSameCompartment(cx, obj, vp);
 
         /* Translate StopIteration singleton. */
-        if (obj->isStopIteration())
+        if (obj->is<StopIterationObject>())
             return js_FindClassObject(cx, JSProto_StopIteration, vp);
 
         /* Unwrap the object, but don't unwrap outer windows. */
@@ -267,7 +274,7 @@ JSCompartment::wrap(JSContext *cx, MutableHandleValue vp, HandleObject existingA
         vp.set(p->value);
         if (vp.isObject()) {
             DebugOnly<JSObject *> obj = &vp.toObject();
-            JS_ASSERT(obj->isCrossCompartmentWrapper());
+            JS_ASSERT(obj->is<CrossCompartmentWrapperObject>());
             JS_ASSERT(obj->getParent() == global);
         }
         return true;
@@ -307,7 +314,8 @@ JSCompartment::wrap(JSContext *cx, MutableHandleValue vp, HandleObject existingA
     if (existing) {
         /* Is it possible to reuse |existing|? */
         if (!existing->getTaggedProto().isLazy() ||
-            existing->getClass() != &ObjectProxyClass ||
+            // Note: don't use is<ObjectProxyObject>() here -- it also matches subclasses!
+            existing->getClass() != &ObjectProxyObject::class_ ||
             existing->getParent() != global ||
             obj->isCallable())
         {
@@ -450,15 +458,15 @@ JSCompartment::markCrossCompartmentWrappers(JSTracer *trc)
     for (WrapperMap::Enum e(crossCompartmentWrappers); !e.empty(); e.popFront()) {
         Value v = e.front().value;
         if (e.front().key.kind == CrossCompartmentKey::ObjectWrapper) {
-            JSObject *wrapper = &v.toObject();
+            ProxyObject *wrapper = &v.toObject().as<ProxyObject>();
 
             /*
              * We have a cross-compartment wrapper. Its private pointer may
              * point into the compartment being collected, so we should mark it.
              */
-            Value referent = GetProxyPrivate(wrapper);
+            Value referent = wrapper->private_();
             MarkValueRoot(trc, &referent, "cross-compartment wrapper");
-            JS_ASSERT(referent == GetProxyPrivate(wrapper));
+            JS_ASSERT(referent == wrapper->private_());
         }
     }
 }
@@ -486,6 +494,8 @@ JSCompartment::markAllCrossCompartmentWrappers(JSTracer *trc)
 void
 JSCompartment::mark(JSTracer *trc)
 {
+    JS_ASSERT(!trc->runtime->isHeapMinorCollecting());
+
 #ifdef JS_ION
     if (ionCompartment_)
         ionCompartment_->mark(trc, this);
@@ -603,6 +613,78 @@ JSCompartment::hasScriptsOnStack()
     return false;
 }
 
+static bool
+AddInnerLazyFunctionsFromScript(JSScript *script, AutoObjectVector &lazyFunctions)
+{
+    if (!script->hasObjects())
+        return true;
+    ObjectArray *objects = script->objects();
+    for (size_t i = script->innerObjectsStart(); i < objects->length; i++) {
+        JSObject *obj = objects->vector[i];
+        if (obj->is<JSFunction>() && obj->as<JSFunction>().isInterpretedLazy()) {
+            if (!lazyFunctions.append(obj))
+                return false;
+        }
+    }
+    return true;
+}
+
+static bool
+CreateLazyScriptsForCompartment(JSContext *cx)
+{
+    AutoObjectVector lazyFunctions(cx);
+
+    // Find all root lazy functions in the compartment: those which have not been
+    // compiled and which have a source object, indicating that their parent has
+    // been compiled.
+    for (gc::CellIter i(cx->zone(), JSFunction::FinalizeKind); !i.done(); i.next()) {
+        JSObject *obj = i.get<JSObject>();
+        if (obj->compartment() == cx->compartment() && obj->is<JSFunction>()) {
+            JSFunction *fun = &obj->as<JSFunction>();
+            if (fun->isInterpretedLazy()) {
+                LazyScript *lazy = fun->lazyScriptOrNull();
+                if (lazy && lazy->sourceObject() && !lazy->maybeScript()) {
+                    if (!lazyFunctions.append(fun))
+                        return false;
+                }
+            }
+        }
+    }
+
+    // Create scripts for each lazy function, updating the list of functions to
+    // process with any newly exposed inner functions in created scripts.
+    // A function cannot be delazified until its outer script exists.
+    for (size_t i = 0; i < lazyFunctions.length(); i++) {
+        JSFunction *fun = &lazyFunctions[i]->as<JSFunction>();
+
+        // lazyFunctions may have been populated with multiple functions for
+        // a lazy script.
+        if (!fun->isInterpretedLazy())
+            continue;
+
+        JSScript *script = fun->getOrCreateScript(cx);
+        if (!script)
+            return false;
+        if (!AddInnerLazyFunctionsFromScript(script, lazyFunctions))
+            return false;
+    }
+
+    // Repoint any clones of the original functions to their new script.
+    for (gc::CellIter i(cx->zone(), JSFunction::FinalizeKind); !i.done(); i.next()) {
+        JSObject *obj = i.get<JSObject>();
+        if (obj->compartment() == cx->compartment() && obj->is<JSFunction>()) {
+            JSFunction *fun = &obj->as<JSFunction>();
+            if (fun->isInterpretedLazy()) {
+                LazyScript *lazy = fun->lazyScriptOrNull();
+                if (lazy && lazy->maybeScript())
+                    fun->existingScript();
+            }
+        }
+    }
+
+    return true;
+}
+
 bool
 JSCompartment::setDebugModeFromC(JSContext *cx, bool b, AutoDebugModeGC &dmgc)
 {
@@ -626,6 +708,8 @@ JSCompartment::setDebugModeFromC(JSContext *cx, bool b, AutoDebugModeGC &dmgc)
             JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEBUG_NOT_IDLE);
             return false;
         }
+        if (enabledAfter && !CreateLazyScriptsForCompartment(cx))
+            return false;
     }
 
     debugModeBits = (debugModeBits & ~unsigned(DebugFromC)) | (b ? DebugFromC : 0);
@@ -677,10 +761,14 @@ JSCompartment::addDebuggee(JSContext *cx, js::GlobalObject *global)
 
 bool
 JSCompartment::addDebuggee(JSContext *cx,
-                           js::GlobalObject *global,
+                           GlobalObject *globalArg,
                            AutoDebugModeGC &dmgc)
 {
+    Rooted<GlobalObject*> global(cx, globalArg);
+
     bool wasEnabled = debugMode();
+    if (!wasEnabled && !CreateLazyScriptsForCompartment(cx))
+        return false;
     if (!debuggees.put(global)) {
         js_ReportOutOfMemory(cx);
         return false;
@@ -745,7 +833,7 @@ JSCompartment::clearTraps(FreeOp *fop)
 }
 
 void
-JSCompartment::sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf, size_t *compartmentObject,
+JSCompartment::sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf, size_t *compartmentObject,
                                    JS::TypeInferenceSizes *tiSizes, size_t *shapesCompartmentTables,
                                    size_t *crossCompartmentWrappersArg, size_t *regexpCompartment,
                                    size_t *debuggeesSet, size_t *baselineStubsOptimized)

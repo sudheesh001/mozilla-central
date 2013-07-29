@@ -4,13 +4,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#if !defined(jsion_baseline_helpers_x64_h__) && defined(JS_ION)
-#define jsion_baseline_helpers_x64_h__
+#ifndef ion_x64_BaselineHelpers_x64_h
+#define ion_x64_BaselineHelpers_x64_h
 
-#include "ion/IonMacroAssembler.h"
+#ifdef JS_ION
 #include "ion/BaselineFrame.h"
-#include "ion/BaselineRegisters.h"
 #include "ion/BaselineIC.h"
+#include "ion/BaselineRegisters.h"
+#include "ion/IonMacroAssembler.h"
 
 namespace js {
 namespace ion {
@@ -274,5 +275,6 @@ EmitStubGuardFailure(MacroAssembler &masm)
 } // namespace ion
 } // namespace js
 
-#endif
+#endif // JS_ION
 
+#endif /* ion_x64_BaselineHelpers_x64_h */
